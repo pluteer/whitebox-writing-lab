@@ -1,0 +1,39 @@
+from fastapi.testclient import TestClient
+
+from whitebox.main import create_app
+from whitebox.providers import DeepSeekProvider
+
+
+def test_publishing_workflow_creates_immutable_revision(tmp_path) -> None:
+    app = create_app(tmp_path / "versions.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        workflow = client.get("/api/workflows/starter").json()
+        published = client.post("/api/workflows/starter/publish", json={"note": "初始版本"})
+        versions = client.get("/api/workflows/starter/versions")
+        client.put("/api/workflows/starter", json={**workflow, "revision": workflow["revision"] + 1})
+        latest = client.post("/api/workflows/starter/publish", json={"note": "第二版"})
+
+    assert published.status_code == 201
+    assert versions.status_code == 200
+    assert versions.json()[0]["revision"] == workflow["revision"]
+    assert latest.status_code == 201
+    assert latest.json()["revision"] == workflow["revision"] + 1
+    assert len(versions.json()) == 1
+
+
+def test_component_can_pin_a_published_workflow_revision(tmp_path) -> None:
+    app = create_app(tmp_path / "pinned.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        workflow = client.get("/api/workflows/starter").json()
+        published = client.post("/api/workflows/starter/publish", json={"note": "锁定测试"}).json()
+        project = client.post("/api/projects", json={"title": "锁定版本", "slug": "pinned"}).json()
+        updated = {**workflow, "revision": workflow["revision"] + 1, "name": "草稿已变化"}
+        client.put("/api/workflows/starter", json=updated)
+        pinned = client.patch(f"/api/projects/{project['id']}/production-stages/setup", json={
+            "workflow_id": "starter", "workflow_revision": published["revision"],
+        }).json()
+        canvas = client.get(f"/api/projects/{project['id']}/production-canvas").json()
+
+    setup = next(item for item in canvas["stages"] if item["id"] == "setup")
+    assert pinned["workflow_revision"] == published["revision"]
+    assert setup["workflow_revision"] == published["revision"]
