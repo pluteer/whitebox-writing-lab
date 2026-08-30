@@ -156,20 +156,47 @@ function Start-WhiteboxServices {
     if (-not $environment.Ready) {
         throw $environment.Message
     }
-    if (Test-Http "$ApiUrl/api/health") { return }
+    if (Test-Http "$ApiUrl/api/health") {
+        $statusLabel.Text = "ALREADY RUNNING  |  $ApiUrl"
+        return
+    }
     $project = Convert-ToBashLiteral (Get-WslProjectPath)
     $command = "cd $project; export WHITEBOX_WEB_DIST=$project/apps/web/dist; exec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000"
     $logPath = Join-Path $RuntimeDir "api.log"
     $errorLogPath = Join-Path $RuntimeDir "api-error.log"
     $script:wslApiProcess = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $command) -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru
+    Set-Content -Path (Join-Path $RuntimeDir "api.host.pid") -Value $script:wslApiProcess.Id -Encoding ascii
     $deadline = [DateTime]::Now.AddSeconds(15)
     while ([DateTime]::Now -lt $deadline -and -not (Test-Http "$ApiUrl/api/health")) { Start-Sleep -Milliseconds 300 }
     if (-not (Test-Http "$ApiUrl/api/health")) { throw "API did not become ready. Check launcher/runtime/api.log." }
 }
 
 function Stop-WhiteboxServices {
-    if ($script:wslApiProcess -and -not $script:wslApiProcess.HasExited) { $script:wslApiProcess.Kill(); $script:wslApiProcess = $null }
+    if ($script:wslApiProcess) {
+        $processId = $script:wslApiProcess.Id
+        try { & taskkill.exe /PID $processId /T /F 2>$null | Out-Null } catch {}
+        $script:wslApiProcess = $null
+    }
+    $hostPidPath = Join-Path $RuntimeDir "api.host.pid"
+    if (Test-Path $hostPidPath) {
+        $hostPid = (Get-Content -Raw $hostPidPath).Trim()
+        if ($hostPid) { try { & taskkill.exe /PID ([int]$hostPid) /T /F 2>$null | Out-Null } catch {} }
+        Remove-Item $hostPidPath -Force -ErrorAction SilentlyContinue
+    }
+    $project = Convert-ToBashLiteral (Get-WslProjectPath)
+    $killCommand = @"
+cd $project
+if test -f launcher/runtime/api.pid; then
+  api_pid=`$(cat launcher/runtime/api.pid 2>/dev/null || true)
+  if test -n "`$api_pid"; then kill "`$api_pid" 2>/dev/null || true; fi
+fi
+"@
+    Invoke-Wsl $killCommand -AllowFailure | Out-Null
     Remove-Item (Join-Path $RuntimeDir "api.pid"), (Join-Path $RuntimeDir "web.pid") -Force -ErrorAction SilentlyContinue
+    $deadline = [DateTime]::Now.AddSeconds(8)
+    while ([DateTime]::Now -lt $deadline -and (Test-Http "$ApiUrl/api/health")) { Start-Sleep -Milliseconds 250 }
+    $script:environmentCache = $null
+    $script:environmentCacheAt = [DateTime]::MinValue
 }
 
 function Get-InstallCommand {
