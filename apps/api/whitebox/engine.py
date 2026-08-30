@@ -146,6 +146,10 @@ class WorkflowEngine:
         await self.emit(run_id, node_run_id, "node.started", {"nodeId": node.id, "attempt": attempt})
         try:
             await self._cooperative_delay(run_id)
+            if node.config.get("fail_if_text") and attempt <= int(node.config.get("fail_attempts", 0)):
+                input_text = " ".join(str(self.storage.get_artifact(item).content.get("text", "")) for item in input_artifact_ids if self.storage.get_artifact(item))
+                if str(node.config["fail_if_text"]) in input_text:
+                    raise RuntimeError(str(node.config.get("failure_message", "模拟节点失败")))
             cache_key = self._cache_key(node, input_artifact_ids)
             definition = get_node_definition(node.type)
             cache_enabled = bool(
@@ -1017,10 +1021,17 @@ class WorkflowEngine:
                     descendants.add(node.id)
                     changed = True
         self.cancelled.discard(run.id)
+        task = self.tasks.pop(run.id, None)
+        if task and not task.done():
+            task.cancel()
+        if task:
+            await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
         self.storage.reset_node_runs(run.id, descendants)
         await self.emit(
             run.id, node_run_id, "node.retry.requested",
             {"nodeId": node_run.node_id, "resetNodeIds": sorted(descendants)},
         )
+        await asyncio.sleep(0)
         self.start(run.id)
         return run.id

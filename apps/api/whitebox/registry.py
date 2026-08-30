@@ -223,6 +223,7 @@ NODE_DEFINITIONS = {
                 "connection_id": {"type": "string"}, "model": {"type": "string"},
                 "temperature": {"type": "number", "minimum": 0, "maximum": 2},
                 "system_prompt": {"type": "string"}, "user_prompt": {"type": "string"},
+                "fail_if_text": {"type": "string"}, "fail_attempts": {"type": "integer"},
             },
         },
         execution=ExecutionPolicy(kind="llm", cache="content-addressed", timeout_seconds=120),
