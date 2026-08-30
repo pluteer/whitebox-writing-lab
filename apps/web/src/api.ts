@@ -27,6 +27,8 @@ export const api = {
     }),
   getWorkflowVersions: (id: string) => request<WorkflowVersion[]>(`/api/workflows/${id}/versions`),
   getWorkflowVersion: (id: string, revision: number) => request<WorkflowVersion>(`/api/workflows/${id}/versions/${revision}`),
+  getWorkflowVersionDiff: (id: string, revision: number) => request<{ unified_diff: string; current_revision: number }>(`/api/workflows/${id}/versions/${revision}/diff`),
+  restoreWorkflowVersion: (id: string, revision: number) => request<WorkflowDocument>(`/api/workflows/${id}/restore`, { method: "POST", body: JSON.stringify({ revision }) }),
   publishWorkflow: (id: string, note: string) => request<WorkflowVersion>(`/api/workflows/${id}/publish`, { method: "POST", body: JSON.stringify({ note }) }),
   createRun: (workflow: WorkflowDocument, projectId: string, chapterNumber: number) =>
     request<{ runId: string }>("/api/runs", {

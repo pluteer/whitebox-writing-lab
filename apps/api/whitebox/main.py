@@ -66,6 +66,7 @@ from .models import (
     ProductionPreflightRequest,
     WorkflowPublishRequest,
     WorkflowVersion,
+    WorkflowRestoreRequest,
     MapRunSummary,
     ReferenceBookImportRequest,
     ReferenceBookImportResult,
@@ -1696,6 +1697,28 @@ def create_app(
         if not workflow:
             raise HTTPException(404, "工作流不存在")
         return storage.publish_workflow_version(workflow, request.note)
+
+    @app.get("/api/workflows/{workflow_id}/versions/{revision}/diff")
+    def diff_workflow_version(workflow_id: str, revision: int):
+        version = storage.get_workflow_version(workflow_id, revision)
+        current = storage.get_workflow(workflow_id)
+        if not version or not current:
+            raise HTTPException(404, "Workflow 版本不存在")
+        before = json.dumps(version.document.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True).splitlines()
+        after = json.dumps(current.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True).splitlines()
+        return {"workflow_id": workflow_id, "revision": revision, "current_revision": current.revision, "unified_diff": "\n".join(difflib.unified_diff(before, after, fromfile=f"v{revision}", tofile=f"draft{current.revision}", lineterm=""))}
+
+    @app.post("/api/workflows/{workflow_id}/restore", response_model=WorkflowDocument)
+    def restore_workflow_version(workflow_id: str, request: WorkflowRestoreRequest):
+        version = storage.get_workflow_version(workflow_id, request.revision)
+        if not version:
+            raise HTTPException(404, "Workflow 版本不存在")
+        document = version.document.model_copy(update={"revision": max(version.revision + 1, storage.get_workflow(workflow_id).revision + 1 if storage.get_workflow(workflow_id) else version.revision + 1)})
+        validation = compile_workflow(document, model_profiles=model_profile_map(), provider_connections=connection_map(), provider_models=provider_model_map(), skills=skill_map(), workflow_resolver=storage.get_workflow)
+        if not validation.valid:
+            raise HTTPException(422, validation.errors)
+        storage.save_workflow_checked(document)
+        return document
 
     @app.post("/api/workflows/validate", response_model=ValidationResult)
     def validate_workflow(workflow: WorkflowDocument) -> ValidationResult:

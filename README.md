@@ -13,6 +13,7 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - 复杂模式：使用 React Flow 编辑节点、端口、连线、分支、Map 和视觉 Frame。
 - Production Run：将多个 Workflow 组件合成为一次可追踪的作品流程。
 - Workflow 版本：区分当前草稿和不可变发布版本，组件可以固定到指定 revision。
+- Workflow 版本管理支持查看草稿与发布版本 Diff，并将历史发布版本恢复为新的当前草稿。
 - Map：对有序集合并行执行 Body Workflow，保存条目级 NodeRun、Artifact 和输入快照。
 - Map 恢复：支持整体重跑和失败条目单独重试。
 - 服务重启后会将中断的节点 Attempt 标记为 `interrupted`，记录 `run.recovery.prepared` 事件并继续未完成的 Run。

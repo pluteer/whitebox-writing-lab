@@ -77,6 +77,7 @@ export default function App() {
   const [workflowStack, setWorkflowStack] = useState<WorkflowDocument[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDocument[]>([]);
   const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersion[]>([]);
+  const [workflowDiff, setWorkflowDiff] = useState<string | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -996,6 +997,10 @@ export default function App() {
       setWorkflowVersions((current) => [version, ...current.filter((item) => item.revision !== version.revision)]);
     } catch (reason) { setError(readApiError(reason as Error)); }
   }
+  async function restoreVersion(revision: number) {
+    if (!workflow || !window.confirm(`将 v${revision} 恢复为新的草稿？`)) return;
+    try { activateWorkflow(await api.restoreWorkflowVersion(workflow.id, revision)); setWorkflowDiff(null); } catch (reason) { setError(readApiError(reason as Error)); }
+  }
 
   async function startRun() {
     if (!workflow) return;
@@ -1112,6 +1117,7 @@ export default function App() {
             {saving ? <Clock3 size={16} /> : <Save size={16} />} {saving ? "保存中" : "保存快照"}
           </button>}
           {canvasLevel === "workflow" && <button className="ghost-button publish-button" onClick={publishWorkflowVersion} disabled={!workflow}>发布版本 {workflowVersions.length ? `v${workflowVersions.length + 1}` : ""}</button>}
+          {canvasLevel === "workflow" && workflowVersions.length > 0 && <select className="version-action-select" value="" onChange={async (event) => { const [action, raw] = event.target.value.split(":"); event.target.value = ""; const revision = Number(raw); if (!revision || !workflow) return; if (action === "restore") await restoreVersion(revision); else setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }}><option value="">版本操作…</option>{workflowVersions.map((version) => <><option key={`diff-${version.revision}`} value={`diff:${version.revision}`}>查看 v{version.revision} Diff</option><option key={`restore-${version.revision}`} value={`restore:${version.revision}`}>恢复为 v{version.revision}</option></>)}</select>}
           {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeProductionComponents}>整理布局</button>}
           {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
           <button className="mobile-model-button" aria-label="打开模型中心" onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={16} /></button>
@@ -1417,6 +1423,7 @@ export default function App() {
         }}
       />}
       {reportArtifact && <div className="report-modal-backdrop" role="dialog" aria-modal="true" aria-label="拆书报告"><article className="report-modal"><header><div><small>REFERENCE BOOK REPORT</small><h2>拆书分析报告</h2><code>{reportArtifact.content_hash}</code></div><button aria-label="关闭拆书报告" onClick={() => setReportArtifact(null)}><X size={18} /></button></header><div className="report-modal-body"><div className="report-category-tabs"><b>结构化报告</b><button onClick={() => downloadJson("拆书报告.json", reportArtifact.content)}>导出 JSON</button><button onClick={() => downloadText("拆书报告.md", String(reportArtifact.content.text ?? JSON.stringify(reportArtifact.content, null, 2)))}>导出 Markdown</button></div><ReportSections content={reportArtifact.content} /></div><footer><span>不可变 Artifact · {reportArtifact.schema_type}</span><button onClick={() => setReportArtifact(null)}>关闭</button></footer></article></div>}
+      {workflowDiff !== null && <div className="report-modal-backdrop" role="dialog" aria-modal="true" aria-label="Workflow 版本差异"><article className="report-modal"><header><div><small>WORKFLOW VERSION DIFF</small><h2>草稿与发布版本差异</h2></div><button aria-label="关闭版本差异" onClick={() => setWorkflowDiff(null)}><X size={18} /></button></header><div className="report-modal-body"><pre className="diff-view">{workflowDiff || "没有差异"}</pre></div><footer><span>仅恢复为新的草稿，不修改历史版本</span><button onClick={() => setWorkflowDiff(null)}>关闭</button></footer></article></div>}
       {productionPreflight && <ProductionPreflightModal preflight={productionPreflight} stageId={selectedStageId} onClose={() => setProductionPreflight(null)} onScopeChange={async (scope, allow) => { setProductionPreflight(await api.preflightProductionRun(projectId, chapterNumber, scope, selectedStageId ?? undefined, allow)); }} onConfirm={async (scope, allow) => { setProductionPreflight(null); await startProductionRun(scope, selectedStageId ?? undefined, allow); }} />}
       {contextMenu && <div className="node-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}><button onClick={duplicateSelectedNode}>复制节点</button><button onClick={disconnectSelectedNode}>断开全部连线</button><button className="danger" onClick={deleteSelectedNode}>删除节点</button></div>}
     </main>

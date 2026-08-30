@@ -136,6 +136,10 @@ class WorkflowPublishRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class WorkflowRestoreRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
 class ExecutionNode(BaseModel):
     id: str
     type: str

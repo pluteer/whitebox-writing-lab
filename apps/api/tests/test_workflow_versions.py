@@ -37,3 +37,20 @@ def test_component_can_pin_a_published_workflow_revision(tmp_path) -> None:
     setup = next(item for item in canvas["stages"] if item["id"] == "setup")
     assert pinned["workflow_revision"] == published["revision"]
     assert setup["workflow_revision"] == published["revision"]
+
+
+def test_workflow_version_diff_and_restore_create_new_draft(tmp_path) -> None:
+    app = create_app(tmp_path / "version-restore.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        workflow = client.get("/api/workflows/starter").json()
+        published = client.post("/api/workflows/starter/publish", json={"note": "可恢复"}).json()
+        changed = {**workflow, "revision": workflow["revision"] + 1, "name": "临时草稿"}
+        client.put("/api/workflows/starter", json=changed)
+        diff = client.get(f"/api/workflows/starter/versions/{published['revision']}/diff")
+        restored = client.post("/api/workflows/starter/restore", json={"revision": published["revision"]})
+
+    assert diff.status_code == 200
+    assert "临时草稿" in diff.json()["unified_diff"]
+    assert restored.status_code == 200
+    assert restored.json()["name"] == workflow["name"]
+    assert restored.json()["revision"] > changed["revision"]

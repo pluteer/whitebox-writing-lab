@@ -620,6 +620,7 @@ Production Run 现在提供独立预检 API 和确认面板，支持 `all` 与 `
 预检若发现 `side_effect` 节点，默认将结果置为不可运行；用户必须显式勾选允许副作用，且该标志传给 Production Run 创建接口，防止预检和执行之间静默扩大权限。
 Workflow 版本基础已落地：普通保存更新草稿，`POST /api/workflows/{id}/publish` 将当前 WorkflowDocument 以 `(workflow_id, revision)` 写入不可变版本表，并提供版本列表/单版本读取 API；编辑器显示草稿 revision 和已发布版本数。
 组件绑定支持可选 `workflow_revision`：未指定时跟随当前草稿，指定时只读取对应已发布版本；Production Run 冻结实际组件 Workflow revision，组件下钻也打开绑定版本。
+Workflow 版本 API 已支持发布版本与当前草稿的统一 Diff，以及从历史发布版本恢复为新的草稿；历史版本保持不可变。
 Workflow 可声明公开业务参数并绑定到内部节点配置；简单模式提供参数编辑入口，组件实例保存参数值，预检和 Production Run 快照会展示实际参数。
 Map 动态 NodeRun 已保存条目索引和输入快照；失败条目可单独重试，其他已成功条目保留并重新参与聚合，整体重跑仍保持原行为。
 单条重试通过 `/api/map-items/{node_run_id}/retry` 触发，动态条目按 `map[xxxx]` 前缀选择性重置，成功条目在 Map 执行时复用已有产物；真实端到端测试已验证失败条目追加 Attempt、成功兄弟条目不重复执行且最终聚合顺序不变。
