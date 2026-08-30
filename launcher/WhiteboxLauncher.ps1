@@ -87,6 +87,13 @@ function Test-Http([string]$Url) {
     }
 }
 
+function Test-WebUi {
+    try {
+        $response = Invoke-WebRequest -UseBasicParsing -Uri $WebUrl -TimeoutSec 2
+        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 400 -and $response.Content -match "Whitebox Writing Lab"
+    } catch { return $false }
+}
+
 function Get-EnvironmentState {
     if ($script:environmentCache -and ((Get-Date) - $script:environmentCacheAt).TotalSeconds -lt 10) {
         return $script:environmentCache
@@ -140,7 +147,7 @@ function Get-EnvironmentState {
 function Get-ServiceState {
     return [PSCustomObject]@{
         Api = Test-Http "$ApiUrl/api/health"
-        Web = Test-Http $WebUrl
+         Web = Test-WebUi
     }
 }
 
@@ -158,9 +165,25 @@ if ! curl --max-time 2 -fsS $ApiUrl/api/health >/dev/null 2>&1; then
   setsid apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000 > launcher/runtime/api.log 2>&1 < /dev/null &
   echo `$! > launcher/runtime/api.pid
 fi
-if ! curl --max-time 2 -fsS $WebUrl >/dev/null 2>&1; then
-  setsid npm run dev:web -- --host 127.0.0.1 --port 5173 > launcher/runtime/web.log 2>&1 < /dev/null &
+if ! (curl --max-time 2 -fsS $WebUrl | grep -q "Whitebox Writing Lab"); then
+  if test -f launcher/runtime/web.pid; then
+    old_pid=`$(cat launcher/runtime/web.pid 2>/dev/null || true)
+    test -n "`$old_pid" && (kill -- -"`$old_pid" 2>/dev/null || kill "`$old_pid" 2>/dev/null || true)
+    rm -f launcher/runtime/web.pid
+  fi
+  sleep 1
+  fuser -k 5173/tcp 2>/dev/null || true
+  sleep 1
+   vite_bin="node_modules/.bin/vite"
+   node_bin=`$(dirname "`$(command -v node)")
+  PATH="`$node_bin:`$PATH" setsid bash -c 'exec node_modules/.bin/vite --host 127.0.0.1 --port 5173' > launcher/runtime/web.log 2>&1 < /dev/null &
   echo `$! > launcher/runtime/web.pid
+  disown
+  sleep 3
+  if ! (curl --max-time 2 -fsS $WebUrl | grep -q "Whitebox Writing Lab"); then
+    cat launcher/runtime/web.log >&2 2>/dev/null || true
+    exit 1
+  fi
 fi
 "@
     Invoke-Wsl $command | Out-Null
