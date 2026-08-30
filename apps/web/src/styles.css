@@ -532,3 +532,4 @@ select { margin-bottom: 12px; }
 .simple-parameter-row input { min-width: 0; }
 .simple-parameter-row code { overflow: hidden; color: #727b6d; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .simple-parameter-row button, .simple-parameters-editor > button { margin-top: 8px; color: #9da88d; background: transparent; border: 1px solid #3b4730; padding: 5px 8px; font-size: 9px; }
+.simple-parameter-editor { margin-top: 8px; padding-bottom: 8px; border-bottom: 1px solid #283021; }.simple-parameter-editor .simple-parameter-row { grid-template-columns: 1fr 1fr auto; }.simple-parameter-editor .simple-parameter-row + .simple-parameter-row { grid-template-columns: 1.3fr 1fr 1fr 1fr; }

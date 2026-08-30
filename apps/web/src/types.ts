@@ -65,6 +65,16 @@ export interface WorkflowDocument {
   parameters?: Array<{ id: string; title: string; type: "string" | "number" | "integer" | "boolean"; default?: unknown; description?: string; target_node_id?: string | null; target_config_key?: string | null }>;
 }
 
+export interface WorkflowParameter {
+  id: string;
+  title: string;
+  type: "string" | "number" | "integer" | "boolean";
+  default?: unknown;
+  description?: string;
+  target_node_id?: string | null;
+  target_config_key?: string | null;
+}
+
 export interface WorkflowVersion {
   workflow_id: string;
   revision: number;
