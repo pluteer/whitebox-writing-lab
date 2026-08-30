@@ -1,7 +1,11 @@
-param([string]$Version = "0.3.0", [switch]$SkipInstaller)
+param([string]$Version = "", [switch]$SkipInstaller)
 $ErrorActionPreference = "Stop"
 $InstallerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $InstallerDir
+$VersionFile = Join-Path $Root "version.json"
+$SourceVersion = (Get-Content -Raw $VersionFile | ConvertFrom-Json).version
+if ([string]::IsNullOrWhiteSpace($Version)) { $Version = $SourceVersion }
+if ($Version -ne $SourceVersion) { throw "Requested version $Version does not match version.json ($SourceVersion)." }
 $Packaging = Join-Path $Root "packaging"
 $Python = (Get-Command python.exe -ErrorAction Stop).Path
 $Npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
