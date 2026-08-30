@@ -54,8 +54,15 @@ function Invoke-Wsl([string]$Command, [switch]$AllowFailure) {
         if (-not $AllowFailure) { throw "WSL command timed out after 8 seconds." }
         return [PSCustomObject]@{ ExitCode = 124; Output = "WSL command timed out after 8 seconds." }
     }
-    $output = $process.StandardOutput.ReadToEnd()
-    $errorOutput = $process.StandardError.ReadToEnd()
+    $outputTask = $process.StandardOutput.ReadToEndAsync()
+    $errorTask = $process.StandardError.ReadToEndAsync()
+    if (-not $outputTask.Wait(1000) -or -not $errorTask.Wait(1000)) {
+        try { $process.Kill() } catch {}
+        if (-not $AllowFailure) { throw "WSL output read timed out." }
+        return [PSCustomObject]@{ ExitCode = 124; Output = "WSL output read timed out." }
+    }
+    $output = $outputTask.Result
+    $errorOutput = $errorTask.Result
     $exitCode = $process.ExitCode
     Remove-Item $commandFile -Force -ErrorAction SilentlyContinue
     if (-not $AllowFailure -and $exitCode -ne 0) {
@@ -81,6 +88,9 @@ function Test-Http([string]$Url) {
 }
 
 function Get-EnvironmentState {
+    if ($script:environmentCache -and ((Get-Date) - $script:environmentCacheAt).TotalSeconds -lt 10) {
+        return $script:environmentCache
+    }
     $state = [ordered]@{
         Wsl = $false
         Distro = ""
@@ -122,7 +132,9 @@ function Get-EnvironmentState {
     } catch {
         $state.Message = $_.Exception.Message
     }
-    return [PSCustomObject]$state
+    $script:environmentCache = [PSCustomObject]$state
+    $script:environmentCacheAt = Get-Date
+    return $script:environmentCache
 }
 
 function Get-ServiceState {
@@ -142,11 +154,11 @@ function Start-WhiteboxServices {
 cd $project
 test -s "`$HOME/.nvm/nvm.sh" && . "`$HOME/.nvm/nvm.sh" || true
 mkdir -p launcher/runtime
-if ! curl -fsS $ApiUrl/api/health >/dev/null 2>&1; then
+if ! curl --max-time 2 -fsS $ApiUrl/api/health >/dev/null 2>&1; then
   setsid apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000 > launcher/runtime/api.log 2>&1 < /dev/null &
   echo `$! > launcher/runtime/api.pid
 fi
-if ! curl -fsS $WebUrl >/dev/null 2>&1; then
+if ! curl --max-time 2 -fsS $WebUrl >/dev/null 2>&1; then
   setsid npm run dev:web -- --host 127.0.0.1 --port 5173 > launcher/runtime/web.log 2>&1 < /dev/null &
   echo `$! > launcher/runtime/web.pid
 fi
@@ -414,6 +426,8 @@ $main.Controls.Add($hint)
 $script:selectedLog = switch ($logSelector.SelectedIndex) { 1 { "web" } 2 { "install" } default { "api" } }
 $script:installJob = $null
 $script:refreshing = $false
+$script:environmentCache = $null
+$script:environmentCacheAt = [DateTime]::MinValue
 
 function Refresh-LauncherState {
     if ($script:refreshing) { return }
@@ -515,7 +529,7 @@ $autoOpen.Add_CheckedChanged({
 })
 
 $timer = New-Object Windows.Forms.Timer
-$timer.Interval = 1800
+$timer.Interval = 10000
 $timer.Add_Tick({ Refresh-LauncherState })
 $timer.Start()
 $form.Add_Shown({ Refresh-LauncherState })
