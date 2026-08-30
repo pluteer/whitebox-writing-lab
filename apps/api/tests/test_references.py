@@ -44,7 +44,7 @@ def test_imported_reference_workflow_runs_map_and_report(tmp_path) -> None:
         async def stream_chat(self, *, model, messages, temperature, max_tokens, thinking, on_delta):
             text = "分块分析：主角在雨夜醒来。"
             if "综合以下" in messages[-1]["content"]:
-                text = "# 拆书报告\n\n故事从失忆与秘密展开。"
+                text = '{"summary":"故事从失忆与秘密展开。","positioning":"悬疑成长","characters":[{"title":"主角","evidence":"雨夜醒来"}],"structure":[],"conflicts":[],"hooks":[],"foreshadowing":[],"style":[],"techniques":[],"risks":[]}'
             await on_delta(text)
             return ProviderResult(
                 text=text, model=model, request_id="reference-test", finish_reason="stop",
@@ -72,9 +72,13 @@ def test_imported_reference_workflow_runs_map_and_report(tmp_path) -> None:
         assert run["status"] == "succeeded"
         report_run = next(item for item in run["node_runs"] if item["node_id"] == "report")
         report = client.get(f"/api/artifacts/{report_run['output_artifact_id']}").json()
+        exported = client.post("/api/projects/demo-project/assets/export-artifact", json={
+            "artifact_id": report["id"], "category": "outline", "relative_name": "book-report.json",
+        })
 
-    assert report["schema_type"] == "ai.PromptResult@1"
-    assert "拆书报告" in report["content"]["text"]
+    assert report["schema_type"] == "reference.BookAnalysisReport@1"
+    assert report["content"]["characters"][0]["title"] == "主角"
+    assert exported.status_code == 200
 
 
 def test_duplicate_reference_import_reuses_existing_stage(tmp_path) -> None:

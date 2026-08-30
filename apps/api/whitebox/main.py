@@ -36,6 +36,7 @@ from .models import (
     ProjectAssetContent,
     ChapterHistoryItem,
     AssetSaveRequest,
+    ArtifactAssetExportRequest,
     StatePatchApplyRequest,
     StatePatchPreview,
     StatePatch,
@@ -1140,6 +1141,18 @@ def create_app(
             project_id, root, relative_path, request.content, request.expected_hash,
             request.actor, request.note,
         )
+
+    @app.post("/api/projects/{project_id}/assets/export-artifact")
+    def export_artifact_asset(project_id: str, request: ArtifactAssetExportRequest):
+        project, root = project_root_for(project_id)
+        artifact = storage.get_artifact(request.artifact_id)
+        run = storage.get_run(artifact.run_id) if artifact else None
+        if not artifact or not run or run.snapshot.run_context.get("project_id") != project.id:
+            raise HTTPException(404, "当前项目的产物不存在")
+        content = artifact.content.get("markdown") or artifact.content.get("text")
+        if content is None:
+            content = json.dumps(artifact.content, ensure_ascii=False, indent=2)
+        return atomic_save_asset(project.id, root, f"{request.category}/{request.relative_name}", str(content), request.expected_hash, request.actor, request.note, artifact.id)
 
     @app.get("/api/projects/{project_id}/assets/{encoded_path}/versions")
     def list_project_asset_versions(project_id: str, encoded_path: str):

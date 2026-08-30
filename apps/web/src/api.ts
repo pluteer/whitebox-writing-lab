@@ -141,6 +141,7 @@ export const api = {
   }) => request<AssetVersion>(`/api/projects/${projectId}/assets/save`, {
     method: "POST", body: JSON.stringify({ ...input, actor: "local-user" }),
   }),
+  exportArtifactAsset: (projectId: string, input: { artifact_id: string; category: Exclude<AssetCategory, "manuscript">; relative_name: string; expected_hash?: string | null; note?: string }) => request<AssetVersion>(`/api/projects/${projectId}/assets/export-artifact`, { method: "POST", body: JSON.stringify(input) }),
   getAssetVersions: (projectId: string, assetId: string) =>
     request<AssetVersion[]>(`/api/projects/${projectId}/assets/${assetId}/versions`),
   previewStateProposal: (projectId: string, artifactId: string) =>

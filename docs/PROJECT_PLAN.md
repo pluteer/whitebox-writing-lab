@@ -622,6 +622,7 @@ Workflow 版本基础已落地：普通保存更新草稿，`POST /api/workflows
 组件绑定支持可选 `workflow_revision`：未指定时跟随当前草稿，指定时只读取对应已发布版本；Production Run 冻结实际组件 Workflow revision，组件下钻也打开绑定版本。
 Workflow 版本 API 已支持发布版本与当前草稿的统一 Diff，以及从历史发布版本恢复为新的草稿；历史版本保持不可变。
 Workflow 可声明公开业务参数并绑定到内部节点配置；简单模式提供参数编辑入口，组件实例保存参数值，预检和 Production Run 快照会展示实际参数。
+拆书报告 Artifact 支持显式导出到当前项目的 `outline/` 资产目录；写入遵循现有哈希冲突、版本化和来源 Artifact 关联规则。
 Map 动态 NodeRun 已保存条目索引和输入快照；失败条目可单独重试，其他已成功条目保留并重新参与聚合，整体重跑仍保持原行为。
 单条重试通过 `/api/map-items/{node_run_id}/retry` 触发，动态条目按 `map[xxxx]` 前缀选择性重置，成功条目在 Map 执行时复用已有产物；真实端到端测试已验证失败条目追加 Attempt、成功兄弟条目不重复执行且最终聚合顺序不变。
 Map 条目视图支持状态筛选；拆书报告视图支持结构化分段、JSON 导出和 Markdown 导出。服务启动时会将中断的 Attempt 标记为 `interrupted`，追加 `run.recovery.prepared` 事件并恢复未完成 Run。

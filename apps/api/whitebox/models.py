@@ -595,6 +595,15 @@ class AssetSaveRequest(BaseModel):
     note: str = Field(default="", max_length=500)
 
 
+class ArtifactAssetExportRequest(BaseModel):
+    artifact_id: str = Field(min_length=1)
+    category: Literal["world", "characters", "outline", "state"] = "outline"
+    relative_name: str = Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,180}\.(?:md|json)$")
+    expected_hash: str | None = None
+    actor: str = Field(default="local-user", min_length=1, max_length=120)
+    note: str = Field(default="从运行产物导出", max_length=500)
+
+
 class AssetVersion(BaseModel):
     id: str
     project_id: str

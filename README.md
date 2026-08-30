@@ -23,6 +23,7 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - 写作审查闭环：起草、审查、裁决、定向修订、质量门和人工审批。
 - 整本拆书：导入 UTF-8 TXT/Markdown，生成 `Read Book → Split → Map → Join → Report → Output` 流程。
 - 项目资产：管理正文、世界观、人物、大纲和状态文件，支持版本、Diff 和回滚。
+- 报告 Artifact 可在确认后写入项目大纲资产，并生成可继续编辑、比较和回滚的 AssetVersion。
 - Skill Registry：导入 `SKILL.md`，为节点绑定上下文 Skill 或受限子代理 Skill。
 - Windows 启动器：通过 PowerShell + WSL 检查环境、安装依赖、启动服务和查看日志。
 - Windows 便携包：提供原生 API、静态 Web 和双击启动入口，朋友无需安装 WSL、Python、Node.js 或 npm 即可运行。
