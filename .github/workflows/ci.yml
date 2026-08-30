@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   api:
@@ -30,3 +31,35 @@ jobs:
       - run: npm ci
       - run: npm --workspace apps/web run test
       - run: npm --workspace apps/web run build
+
+  windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".\apps\api[dev]" pyinstaller
+      - run: .\installer\构建便携包.ps1 -Version 0.3.0 -SkipInstaller
+        shell: powershell
+      - name: Verify portable bundle
+        shell: powershell
+        run: |
+          if (-not (Test-Path .\packaging\runtime\api\whitebox-api.exe)) { throw "API executable is missing" }
+          if (-not (Test-Path .\packaging\runtime\web\index.html)) { throw "Web bundle is missing" }
+          if (-not (Test-Path .\packaging\whitebox-writing-portable-0.3.0.zip)) { throw "Portable archive is missing" }
+      - name: Write SHA256
+        shell: powershell
+        run: |
+          (Get-FileHash .\packaging\whitebox-writing-portable-0.3.0.zip -Algorithm SHA256).Hash | Set-Content .\packaging\whitebox-writing-portable-0.3.0.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whitebox-writing-portable-0.3.0
+          path: |
+            packaging/whitebox-writing-portable-0.3.0.zip
+            packaging/whitebox-writing-portable-0.3.0.sha256
