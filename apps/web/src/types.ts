@@ -148,6 +148,18 @@ export interface NodeRun {
   input_snapshot?: { item_index?: number; item?: unknown; artifact_ids?: string[]; contents?: unknown[] } | null;
 }
 
+export interface MapRunSummary {
+  node_run_id: string;
+  total_items: number;
+  succeeded_items: number;
+  failed_items: number;
+  running_items: number;
+  duration_ms: number;
+  model_calls: number;
+  total_tokens: number;
+  items: Array<{ item_id: string; status: string; completed: number; total: number; attempts: number; duration_ms: number; model_calls: number; total_tokens: number; output_artifact_id: string | null; error: string | null }>;
+}
+
 export interface Run {
   id: string;
   workflow_id: string;

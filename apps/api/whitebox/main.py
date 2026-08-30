@@ -66,6 +66,7 @@ from .models import (
     ProductionPreflightRequest,
     WorkflowPublishRequest,
     WorkflowVersion,
+    MapRunSummary,
     ReferenceBookImportRequest,
     ReferenceBookImportResult,
     ReferenceBook,
@@ -1914,6 +1915,29 @@ def create_app(
     @app.get("/api/attempts/{attempt_id}/provider-calls")
     def get_provider_calls(attempt_id: str):
         return storage.list_provider_calls(attempt_id)
+
+    @app.get("/api/map-runs/{node_run_id}/summary", response_model=MapRunSummary)
+    def get_map_run_summary(node_run_id: str):
+        map_run = storage.get_node_run(node_run_id)
+        if not map_run or map_run.node_type != "flow.map":
+            raise HTTPException(404, "Map 节点运行不存在")
+        run = storage.get_run(map_run.run_id)
+        if not run:
+            raise HTTPException(404, "运行不存在")
+        groups: dict[str, list] = {}
+        for row in run.node_runs:
+            if row.node_id.startswith(f"{map_run.node_id}["):
+                groups.setdefault(row.node_id.split("/", 1)[0], []).append(row)
+        items = []
+        for item_id, rows in sorted(groups.items()):
+            attempts = [attempt for row in rows for attempt in storage.list_attempts(row.id)]
+            calls = [call for attempt in attempts for call in storage.list_provider_calls(attempt.id)]
+            durations = [datetime.fromisoformat(row.completed_at).timestamp() - datetime.fromisoformat(row.started_at).timestamp() for row in rows if row.started_at and row.completed_at]
+            failed = next((row for row in rows if row.status == "failed"), None)
+            completed = sum(row.status in {"succeeded", "cached"} for row in rows)
+            status = "failed" if failed else "succeeded" if rows and completed == len(rows) else "running"
+            items.append({"item_id": item_id, "status": status, "completed": completed, "total": len(rows), "attempts": len(attempts), "duration_ms": round(max(durations, default=0) * 1000), "model_calls": len(calls), "total_tokens": sum(call.usage.total_tokens if call.usage else 0 for call in calls), "output_artifact_id": next((row.output_artifact_id for row in reversed(rows) if row.output_artifact_id), None), "error": failed.error if failed else None})
+        return {"node_run_id": node_run_id, "total_items": len(items), "succeeded_items": sum(item["status"] == "succeeded" for item in items), "failed_items": sum(item["status"] == "failed" for item in items), "running_items": sum(item["status"] == "running" for item in items), "duration_ms": sum(item["duration_ms"] for item in items), "model_calls": sum(item["model_calls"] for item in items), "total_tokens": sum(item["total_tokens"] for item in items), "items": items}
 
     @app.post("/api/node-runs/{node_run_id}/retry", status_code=202)
     async def retry_node_run(node_run_id: str) -> dict[str, str]:

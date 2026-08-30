@@ -1735,8 +1735,10 @@ function NodeInspector({
   const configKey = node.type === "mock.source" ? "text" : "instruction";
   const [templateName, setTemplateName] = useState("");
   const [mapFilter, setMapFilter] = useState<"all" | "running" | "succeeded" | "failed">("all");
+  const [mapSummary, setMapSummary] = useState<import("./types").MapRunSummary | null>(null);
   const mapItems = node.type === "flow.map" ? summarizeMapItems(node.id, allNodeRuns) : [];
   const visibleMapItems = mapItems.filter((item) => mapFilter === "all" || item.status === mapFilter);
+  useEffect(() => { if (node.type !== "flow.map" || !nodeRun) { setMapSummary(null); return; } api.getMapRunSummary(nodeRun.id).then(setMapSummary).catch(() => setMapSummary(null)); }, [node.type, nodeRun?.id, allNodeRuns.length]);
   return (
     <div className="inspector-body">
       <section className="evidence-block">

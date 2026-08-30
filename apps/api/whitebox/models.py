@@ -190,6 +190,31 @@ class MapItemRetryRequest(BaseModel):
     node_run_id: str = Field(min_length=1)
 
 
+class MapItemSummary(BaseModel):
+    item_id: str
+    status: str
+    completed: int
+    total: int
+    attempts: int
+    duration_ms: int
+    model_calls: int
+    total_tokens: int
+    output_artifact_id: str | None = None
+    error: str | None = None
+
+
+class MapRunSummary(BaseModel):
+    node_run_id: str
+    total_items: int
+    succeeded_items: int
+    failed_items: int
+    running_items: int
+    duration_ms: int
+    model_calls: int
+    total_tokens: int
+    items: list[MapItemSummary]
+
+
 class NodeAttempt(BaseModel):
     id: str
     node_run_id: str

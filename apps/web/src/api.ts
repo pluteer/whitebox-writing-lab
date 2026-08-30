@@ -1,4 +1,4 @@
-import type { ApprovalRecord, Artifact, AssetCategory, AssetVersion, AssetVersionDiff, ChapterHistoryItem, DeepSeekBalance, ModelProfile, ModelProfileInput, NodeAttempt, NodeDefinition, NodeSkillTemplate, ProductionCanvas, ProductionStage, ProductionStageStatus, ProductionPreflight, Project, ProjectAsset, ProjectAssetContent, ProviderCall, ProviderConnection, ProviderConnectionInput, ProviderModel, ProviderModelInput, ProviderStatus, ReferenceBook, Run, RunEvent, Skill, SkillBindingInput, SkillBundleImportPreview, StatePatchPreview, SubflowDefinition, WorkflowDocument, WorkflowNode, WorkflowEdge, WorkflowTemplateImportPreview, WorkflowVersion } from "./types";
+import type { ApprovalRecord, Artifact, AssetCategory, AssetVersion, AssetVersionDiff, ChapterHistoryItem, DeepSeekBalance, MapRunSummary, ModelProfile, ModelProfileInput, NodeAttempt, NodeDefinition, NodeSkillTemplate, ProductionCanvas, ProductionStage, ProductionStageStatus, ProductionPreflight, Project, ProjectAsset, ProjectAssetContent, ProviderCall, ProviderConnection, ProviderConnectionInput, ProviderModel, ProviderModelInput, ProviderStatus, ReferenceBook, Run, RunEvent, Skill, SkillBindingInput, SkillBundleImportPreview, StatePatchPreview, SubflowDefinition, WorkflowDocument, WorkflowNode, WorkflowEdge, WorkflowTemplateImportPreview, WorkflowVersion } from "./types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -53,6 +53,8 @@ export const api = {
     request<{ runId: string }>(`/api/node-runs/${nodeRunId}/retry`, { method: "POST" }),
   retryMapItem: (nodeRunId: string) =>
     request<{ runId: string; itemId: string }>(`/api/map-items/${nodeRunId}/retry`, { method: "POST" }),
+  getMapRunSummary: (nodeRunId: string) =>
+    request<MapRunSummary>(`/api/map-runs/${nodeRunId}/summary`),
   getAttempts: (nodeRunId: string) =>
     request<NodeAttempt[]>(`/api/node-runs/${nodeRunId}/attempts`),
   getProviderCalls: (attemptId: string) =>
