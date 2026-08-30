@@ -15,6 +15,7 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - Workflow 版本：区分当前草稿和不可变发布版本，组件可以固定到指定 revision。
 - Map：对有序集合并行执行 Body Workflow，保存条目级 NodeRun、Artifact 和输入快照。
 - Map 恢复：支持整体重跑和失败条目单独重试。
+- Map 单条重试经过真实端到端验证：失败条目追加 Attempt 并恢复成功，成功兄弟条目的 Attempt 不变，最终聚合顺序保持一致。
 - 白盒证据：查看节点状态、Attempt、模型请求、Token 用量、Artifact 哈希和父产物血缘。
 - 写作审查闭环：起草、审查、裁决、定向修订、质量门和人工审批。
 - 整本拆书：导入 UTF-8 TXT/Markdown，生成 `Read Book → Split → Map → Join → Report → Output` 流程。

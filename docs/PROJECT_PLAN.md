@@ -622,7 +622,7 @@ Workflow 版本基础已落地：普通保存更新草稿，`POST /api/workflows
 组件绑定支持可选 `workflow_revision`：未指定时跟随当前草稿，指定时只读取对应已发布版本；Production Run 冻结实际组件 Workflow revision，组件下钻也打开绑定版本。
 Workflow 可声明公开业务参数并绑定到内部节点配置；简单模式提供参数编辑入口，组件实例保存参数值，预检和 Production Run 快照会展示实际参数。
 Map 动态 NodeRun 已保存条目索引和输入快照；失败条目可单独重试，其他已成功条目保留并重新参与聚合，整体重跑仍保持原行为。
-单条重试通过 `/api/map-items/{node_run_id}/retry` 触发，动态条目按 `map[xxxx]` 前缀选择性重置，成功条目在 Map 执行时复用已有产物。
+单条重试通过 `/api/map-items/{node_run_id}/retry` 触发，动态条目按 `map[xxxx]` 前缀选择性重置，成功条目在 Map 执行时复用已有产物；真实端到端测试已验证失败条目追加 Attempt、成功兄弟条目不重复执行且最终聚合顺序不变。
 Map 条目视图支持状态筛选；拆书报告视图支持结构化分段、JSON 导出和 Markdown 导出。服务启动时仍会将中断的 Run 标记为 pending 并恢复执行。
 副作用许可仅属于 Production Run；普通 `/api/runs` 保持向后兼容，仍按原有人工审批和归档语义执行。
 官方阶段 Workflow 已升级为带标准 Input/Output 边界的组件流程，重绑组件时服务端刷新边界端口契约；没有边界的历史 Workflow 仍可作为独立组件运行，但其顶层输入无法进行 Artifact 注入。

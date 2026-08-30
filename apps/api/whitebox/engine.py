@@ -146,6 +146,11 @@ class WorkflowEngine:
         await self.emit(run_id, node_run_id, "node.started", {"nodeId": node.id, "attempt": attempt})
         try:
             await self._cooperative_delay(run_id)
+            if node.config.get("fail_if_text") and attempt <= int(node.config.get("fail_attempts", 0)):
+                values = [str(node.config.get("default", ""))]
+                values.extend(str(self.storage.get_artifact(item).content.get("text", "")) for item in input_artifact_ids if self.storage.get_artifact(item))
+                if str(node.config["fail_if_text"]) in " ".join(values):
+                    raise RuntimeError(str(node.config.get("failure_message", "模拟节点失败")))
             cache_key = self._cache_key(node, input_artifact_ids)
             definition = get_node_definition(node.type)
             cache_enabled = bool(
@@ -393,7 +398,11 @@ class WorkflowEngine:
             async with semaphore:
                 return await run_item(index, item)
 
-        pairs = await asyncio.gather(*(limited(index, item) for index, item in enumerate(items)))
+        pairs = await asyncio.gather(*(limited(index, item) for index, item in enumerate(items)), return_exceptions=True)
+        failures = [pair for pair in pairs if isinstance(pair, Exception)]
+        if failures:
+            raise RuntimeError(f"Map 条目执行失败: {failures[0]}")
+        pairs = [pair for pair in pairs if not isinstance(pair, Exception)]
         results = [pair[0] for pair in pairs]
         output_artifact_ids = [pair[1] for pair in pairs]
         return {"items": results, "count": len(results), "operation": "map"}, "core.List@1", output_artifact_ids
@@ -1023,4 +1032,30 @@ class WorkflowEngine:
             {"nodeId": node_run.node_id, "resetNodeIds": sorted(descendants)},
         )
         self.start(run.id)
+        return run.id
+
+    async def retry_map_item(self, node_run_id: str) -> str:
+        item_run = self.storage.get_node_run(node_run_id)
+        if not item_run or "[" not in item_run.node_id:
+            raise ValueError("Map 条目运行不存在")
+        run = self.storage.get_run(item_run.run_id)
+        if not run:
+            raise ValueError("运行不存在")
+        item_prefix = item_run.node_id.split("/", 1)[0]
+        map_id = item_prefix.split("[", 1)[0]
+        map_node = next((node for node in run.snapshot.nodes if node.id == map_id), None)
+        map_row = next((row for row in run.node_runs if row.node_id == map_id), None)
+        if not map_node or not map_row:
+            raise ValueError("Map 节点不存在")
+        target_ids = {row.node_id for row in run.node_runs if row.node_id.startswith(f"{item_prefix}/")}
+        target_ids.add(map_id)
+        self.storage.reset_node_runs(run.id, target_ids)
+        await self.emit(run.id, node_run_id, "map.item.retry.requested", {"itemId": item_prefix})
+        completed = {
+            row.node_id: row for row in self.storage.get_run(run.id).node_runs
+            if row.status == "succeeded"
+        }
+        await self._execute_node(run.id, map_row.id, map_node, completed)
+        self.storage.update_run(run.id, "succeeded")
+        await self.emit(run.id, map_row.id, "map.item.retry.succeeded", {"itemId": item_prefix})
         return run.id

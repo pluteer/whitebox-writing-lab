@@ -334,6 +334,36 @@ def test_map_item_retry_requires_dynamic_failed_node(tmp_path) -> None:
     assert response.status_code == 404
 
 
+def test_map_item_retry_preserves_successful_sibling(tmp_path) -> None:
+    app = make_test_app(tmp_path / "map-item-retry-e2e.db")
+    body = {"id": "retry-body", "name": "Retry Body", "revision": 1, "nodes": [
+        {"id": "input", "type": "workflow.input", "position": {"x": 0, "y": 0}, "config": {"name": "item"}},
+        {"id": "call", "type": "ai.prompt_call", "position": {"x": 300, "y": 0}, "config": {"connection_id": "deepseek-official", "model": "deepseek-v4-flash", "temperature": 0.2, "system_prompt": "分析单项", "user_prompt": "分析 {{input.text}}", "fail_if_text": "甲", "fail_attempts": 1}},
+        {"id": "output", "type": "workflow.output", "position": {"x": 600, "y": 0}, "config": {"name": "result"}},
+    ], "edges": [{"id": "input-call", "source": "input", "target": "call", "source_port": "value", "target_port": "input"}, {"id": "call-output", "source": "call", "target": "output", "source_port": "text", "target_port": "value"}]}
+    parent = {"id": "retry-parent", "name": "Retry Parent", "revision": 1, "nodes": [
+        {"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "甲\n\n乙"}},
+        {"id": "split", "type": "flow.split", "position": {"x": 300, "y": 0}, "config": {"mode": "paragraph"}},
+        {"id": "map", "type": "flow.map", "position": {"x": 600, "y": 0}, "config": {"body_workflow_id": "retry-body", "concurrency": 2}},
+    ], "edges": [{"id": "source-split", "source": "source", "target": "split", "source_port": "draft", "target_port": "text"}, {"id": "split-map", "source": "split", "target": "map", "source_port": "items", "target_port": "items"}]}
+    with TestClient(app) as client:
+        assert client.put("/api/workflows/retry-body", json=body).status_code == 200
+        run_id = client.post("/api/runs", json={"workflow": parent}).json()["runId"]
+        failed = wait_for_status(client, run_id, {"failed"})
+        dynamic = [row for row in failed["node_runs"] if row["node_id"].endswith("/call")]
+        assert len(dynamic) == 2
+        target = next(row for row in dynamic if row["status"] == "failed")
+        sibling = next(row for row in dynamic if row["status"] == "succeeded")
+        assert client.post(f"/api/map-items/{target['id']}/retry").status_code == 202
+        after = client.get(f"/api/runs/{run_id}").json()
+        map_row = next(row for row in after["node_runs"] if row["node_id"] == "map")
+        map_artifact = client.get(f"/api/artifacts/{map_row['output_artifact_id']}").json()
+    assert after["status"] == "succeeded"
+    assert next(row for row in after["node_runs"] if row["id"] == target["id"])["attempt"] == 2
+    assert next(row for row in after["node_runs"] if row["id"] == sibling["id"])["attempt"] == 1
+    assert [item["index"] for item in map_artifact["content"]["items"]] == [0, 1]
+
+
 def test_failed_node_can_retry_with_append_only_attempts(tmp_path) -> None:
     app = make_test_app(tmp_path / "retry.db")
     workflow = DEFAULT_WORKFLOW.model_copy(deep=True)

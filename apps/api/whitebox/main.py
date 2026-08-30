@@ -1932,7 +1932,10 @@ def create_app(
             raise HTTPException(409, "只有失败或取消的 Map 条目可以重试")
         if not node_run.input_snapshot or "item" not in node_run.input_snapshot:
             raise HTTPException(409, "该 Map 条目没有输入快照，无法重试")
-        run_id = await engine.retry(node_run_id)
+        try:
+            run_id = await engine.retry_map_item(node_run_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
         return {"runId": run_id, "itemId": node_run.node_id.split("/", 1)[0]}
 
     @app.get("/api/artifacts/{artifact_id}")
