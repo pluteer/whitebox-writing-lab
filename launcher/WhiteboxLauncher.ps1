@@ -14,7 +14,7 @@ $RuntimeDir = Join-Path $ScriptDir "runtime"
 $SettingsPath = Join-Path $ScriptDir "settings.json"
 $ApiUrl = "http://127.0.0.1:8000"
 $WebUrl = "http://127.0.0.1:5173"
-$LauncherVersion = "0.2.0"
+$LauncherVersion = "0.3.0"
 
 if (-not (Test-Path $RuntimeDir)) {
     New-Item -ItemType Directory -Path $RuntimeDir | Out-Null

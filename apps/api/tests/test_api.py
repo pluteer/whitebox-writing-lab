@@ -14,6 +14,22 @@ from whitebox.providers import DeepSeekProvider, ProviderResult
 from whitebox.storage import Storage
 
 
+def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
+    database = tmp_path / "runtime.db"
+    secrets = tmp_path / "secrets.json"
+    projects = tmp_path / "projects"
+    app = create_app(database, DeepSeekProvider(api_key="test"), secrets, projects)
+    with TestClient(app) as client:
+        info = client.get("/api/runtime-info")
+
+    assert info.status_code == 200
+    assert info.json()["version"] == "0.3.0"
+    assert info.json()["mode"] == "development"
+    assert info.json()["database_path"] == str(database)
+    assert info.json()["secrets_path"] == str(secrets)
+    assert info.json()["projects_path"] == str(projects)
+
+
 class FakeDeepSeekProvider:
     provider = "deepseek"
     base_url = "https://api.deepseek.com"

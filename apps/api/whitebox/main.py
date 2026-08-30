@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .compiler import compile_workflow
 from .engine import EventBroker, WorkflowEngine
+from .version import get_version
 from .models import (
     CreateRunRequest,
     DeepSeekConfigUpdate,
@@ -405,7 +406,8 @@ def create_app(
                 task.cancel()
         await asyncio.gather(*engine.tasks.values(), return_exceptions=True)
 
-    app = FastAPI(title="Whitebox Writing API", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Whitebox Writing API", version=get_version(), lifespan=lifespan)
+    web_dist = Path(os.getenv("WHITEBOX_WEB_DIST", Path(__file__).resolve().parents[2] / "web" / "dist"))
     app.state.storage = storage
     app.state.engine = engine
     app.state.broker = broker
@@ -420,6 +422,17 @@ def create_app(
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/runtime-info")
+    def runtime_info() -> dict[str, str]:
+        return {
+            "version": get_version(),
+            "mode": os.getenv("WHITEBOX_RUNTIME_MODE", "development"),
+            "database_path": str(path),
+            "secrets_path": str(secret_store.path),
+            "projects_path": str(projects_root),
+            "web_dist": str(web_dist),
+        }
 
     @app.get("/api/skills")
     def list_skills():
@@ -1953,7 +1966,6 @@ def create_app(
         finally:
             broker.unsubscribe(run_id, queue)
 
-    web_dist = Path(os.getenv("WHITEBOX_WEB_DIST", Path(__file__).resolve().parents[2] / "web" / "dist"))
     if web_dist.is_dir():
         app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
     return app

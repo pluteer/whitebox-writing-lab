@@ -3,6 +3,7 @@ param([switch]$Stop)
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not (Test-Path (Join-Path $Root "runtime"))) { $Root = Split-Path -Parent $Root }
+$env:WHITEBOX_RUNTIME_MODE = "portable"
 $ApiExe = Join-Path $Root "runtime\api\whitebox-api.exe"
 $ApiUrl = "http://127.0.0.1:8000"
 $Data = Join-Path $Root "data"

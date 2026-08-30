@@ -152,7 +152,7 @@ installer\构建安装包.bat
 
 在 Windows 安装 Inno Setup 6 后，双击构建脚本即可生成安装包。安装包包含源码和启动器，但不包含 WSL、Python、Node.js、npm、虚拟环境、依赖目录、数据库或密钥。详细说明见 [`launcher/README.md`](launcher/README.md)。
 
-如果只是分享给朋友，推荐使用便携包构建脚本：
+如果只是分享给朋友，推荐使用便携包构建脚本。便携模式使用独立的 `data/` 和 `logs/`，不会读取开发目录的数据：
 
 ```powershell
 .\installer\构建便携包.ps1 -Version 0.3.0

@@ -1,6 +1,6 @@
 # Whitebox Windows 启动器
 
-双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.2.0`。
+双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.3.0`。
 
 启动器通过 Windows 的 `wsl.exe` 调用项目现有 WSL 环境，不复制或复用 ComfyUI 的 Python、Git、DLL、配置及源码。
 
@@ -25,7 +25,7 @@
 
 ## 安装包
 
-仓库提供 `installer/Whitebox.iss` Inno Setup 脚本。Windows 安装机安装 Inno Setup 6 后双击 `installer/构建安装包.bat` 即可生成 `installer\Output\Whitebox-Writing-0.2.0-Setup.exe`。当前已在本机 Windows 环境用 Inno Setup 6.7.3 成功编译该文件。安装包只打包项目源码和启动器，不打包 WSL、Python、Node.js、npm、虚拟环境、依赖目录或密钥；安装后仍需按“要求”准备本机运行环境。
+仓库提供 `installer/Whitebox.iss` Inno Setup 脚本。Windows 安装机安装 Inno Setup 6 后双击 `installer/构建安装包.bat` 即可生成安装包。安装包只打包项目源码和启动器，不打包 WSL、Python、Node.js、npm、虚拟环境、依赖目录或密钥；安装后仍需按“要求”准备本机运行环境。
 
 卸载时会先尝试停止 Whitebox 服务，再删除安装目录中的运行日志和设置文件；用户项目数据、WSL 环境和项目外部数据不会由卸载器处理。
 
