@@ -13,7 +13,7 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 $RuntimeDir = Join-Path $ScriptDir "runtime"
 $SettingsPath = Join-Path $ScriptDir "settings.json"
 $ApiUrl = "http://127.0.0.1:8000"
-$WebUrl = "http://127.0.0.1:5173"
+$WebUrl = $ApiUrl
 $LauncherVersion = "0.3.0"
 
 if (-not (Test-Path $RuntimeDir)) {
@@ -156,40 +156,19 @@ function Start-WhiteboxServices {
     if (-not $environment.Ready) {
         throw $environment.Message
     }
+    if (Test-Http "$ApiUrl/api/health") { return }
     $project = Convert-ToBashLiteral (Get-WslProjectPath)
-    $command = @"
-cd $project
-test -s "`$HOME/.nvm/nvm.sh" && . "`$HOME/.nvm/nvm.sh" || true
-mkdir -p launcher/runtime
-if ! curl --max-time 2 -fsS $ApiUrl/api/health >/dev/null 2>&1; then
-  setsid apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000 > launcher/runtime/api.log 2>&1 < /dev/null &
-  echo `$! > launcher/runtime/api.pid
-fi
-if ! (curl --max-time 2 -fsS $WebUrl | grep -q "Whitebox Writing Lab"); then
-  if test -f launcher/runtime/web.pid; then
-    old_pid=`$(cat launcher/runtime/web.pid 2>/dev/null || true)
-    test -n "`$old_pid" && (kill -- -"`$old_pid" 2>/dev/null || kill "`$old_pid" 2>/dev/null || true)
-    rm -f launcher/runtime/web.pid
-  fi
-  sleep 1
-  fuser -k 5173/tcp 2>/dev/null || true
-  sleep 1
-   vite_bin="node_modules/.bin/vite"
-   node_bin=`$(dirname "`$(command -v node)")
-  PATH="`$node_bin:`$PATH" setsid bash -c 'exec node_modules/.bin/vite --host 127.0.0.1 --port 5173' > launcher/runtime/web.log 2>&1 < /dev/null &
-  echo `$! > launcher/runtime/web.pid
-  disown
-  sleep 3
-  if ! (curl --max-time 2 -fsS $WebUrl | grep -q "Whitebox Writing Lab"); then
-    cat launcher/runtime/web.log >&2 2>/dev/null || true
-    exit 1
-  fi
-fi
-"@
-    Invoke-Wsl $command | Out-Null
+    $command = "cd $project; export WHITEBOX_WEB_DIST=$project/apps/web/dist; exec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000"
+    $logPath = Join-Path $RuntimeDir "api.log"
+    $errorLogPath = Join-Path $RuntimeDir "api-error.log"
+    $script:wslApiProcess = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $command) -WindowStyle Hidden -RedirectStandardOutput $logPath -RedirectStandardError $errorLogPath -PassThru
+    $deadline = [DateTime]::Now.AddSeconds(15)
+    while ([DateTime]::Now -lt $deadline -and -not (Test-Http "$ApiUrl/api/health")) { Start-Sleep -Milliseconds 300 }
+    if (-not (Test-Http "$ApiUrl/api/health")) { throw "API did not become ready. Check launcher/runtime/api.log." }
 }
 
 function Stop-WhiteboxServices {
+    if ($script:wslApiProcess -and -not $script:wslApiProcess.HasExited) { $script:wslApiProcess.Kill(); $script:wslApiProcess = $null }
     $project = Convert-ToBashLiteral (Get-WslProjectPath)
     $command = @"
 cd $project
