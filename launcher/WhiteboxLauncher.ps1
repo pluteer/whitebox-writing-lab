@@ -169,21 +169,7 @@ function Start-WhiteboxServices {
 
 function Stop-WhiteboxServices {
     if ($script:wslApiProcess -and -not $script:wslApiProcess.HasExited) { $script:wslApiProcess.Kill(); $script:wslApiProcess = $null }
-    $project = Convert-ToBashLiteral (Get-WslProjectPath)
-    $command = @"
-cd $project
-for service in api web; do
-  pidfile="launcher/runtime/`$service.pid"
-  if test -f "`$pidfile"; then
-    pid=`$(cat "`$pidfile" 2>/dev/null || true)
-    if test -n "`$pid"; then
-      kill -- -"`$pid" 2>/dev/null || kill "`$pid" 2>/dev/null || true
-    fi
-    rm -f "`$pidfile"
-  fi
-done
-"@
-    Invoke-Wsl $command -AllowFailure | Out-Null
+    Remove-Item (Join-Path $RuntimeDir "api.pid"), (Join-Path $RuntimeDir "web.pid") -Force -ErrorAction SilentlyContinue
 }
 
 function Get-InstallCommand {
@@ -193,10 +179,10 @@ function Get-InstallCommand {
 
 function Get-LogTail([string]$Name, [int]$Lines = 120) {
     try {
-        $project = Convert-ToBashLiteral (Get-WslProjectPath)
         $safeName = if ($Name -in @("api", "web", "install")) { $Name } else { "api" }
-        $result = Invoke-Wsl "cd $project; if test -f launcher/runtime/$safeName.log; then tail -n $Lines launcher/runtime/$safeName.log; fi" -AllowFailure
-        return $result.Output
+        $path = Join-Path $RuntimeDir "$safeName.log"
+        if (-not (Test-Path $path)) { return "" }
+        return ((Get-Content $path -Tail $Lines -ErrorAction SilentlyContinue) -join [Environment]::NewLine)
     } catch {
         return $_.Exception.Message
     }
