@@ -334,6 +334,13 @@ def test_map_item_retry_requires_dynamic_failed_node(tmp_path) -> None:
     assert response.status_code == 404
 
 
+def test_map_run_summary_requires_map_node_run(tmp_path) -> None:
+    app = make_test_app(tmp_path / "map-summary.db")
+    with TestClient(app) as client:
+        response = client.get("/api/map-runs/does-not-exist/summary")
+    assert response.status_code == 404
+
+
 def test_map_item_retry_preserves_successful_sibling(tmp_path) -> None:
     app = make_test_app(tmp_path / "map-item-retry-e2e.db")
     body = {"id": "retry-body", "name": "Retry Body", "revision": 1, "nodes": [

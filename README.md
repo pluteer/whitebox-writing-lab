@@ -17,6 +17,7 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - Map 恢复：支持整体重跑和失败条目单独重试。
 - 服务重启后会将中断的节点 Attempt 标记为 `interrupted`，记录 `run.recovery.prepared` 事件并继续未完成的 Run。
 - Map 单条重试经过真实端到端验证：失败条目追加 Attempt 并恢复成功，成功兄弟条目的 Attempt 不变，最终聚合顺序保持一致。
+- Map 运行提供统一摘要 API，可聚合条目状态、耗时、Attempt、模型调用和 Token 数据。
 - 白盒证据：查看节点状态、Attempt、模型请求、Token 用量、Artifact 哈希和父产物血缘。
 - 写作审查闭环：起草、审查、裁决、定向修订、质量门和人工审批。
 - 整本拆书：导入 UTF-8 TXT/Markdown，生成 `Read Book → Split → Map → Join → Report → Output` 流程。
