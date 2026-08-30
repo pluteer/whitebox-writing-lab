@@ -17,6 +17,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .compiler import compile_workflow
@@ -346,9 +347,9 @@ def create_app(
     project_root: Path | None = None,
 ) -> FastAPI:
     path = database_path or Path(os.getenv("WHITEBOX_DB", DEFAULT_DATABASE_PATH))
-    projects_root = project_root or (path.parent / "projects")
+    projects_root = project_root or Path(os.getenv("WHITEBOX_PROJECTS", path.parent / "projects"))
     storage = Storage(path)
-    secret_store = LocalSecretStore(secrets_path or DEFAULT_SECRETS_PATH)
+    secret_store = LocalSecretStore(secrets_path or Path(os.getenv("WHITEBOX_SECRETS", DEFAULT_SECRETS_PATH)))
     saved_deepseek = secret_store.get_provider("deepseek")
     env_api_key = os.getenv("DEEPSEEK_API_KEY")
     if deepseek_provider is None:
@@ -1952,6 +1953,9 @@ def create_app(
         finally:
             broker.unsubscribe(run_id, queue)
 
+    web_dist = Path(os.getenv("WHITEBOX_WEB_DIST", Path(__file__).resolve().parents[2] / "web" / "dist"))
+    if web_dist.is_dir():
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
     return app
 
 

@@ -31,6 +31,14 @@
 
 ## 命令行维护
 
+要构建给朋友直接使用的便携包，在 Windows PowerShell 中从项目根目录执行：
+
+```powershell
+.\installer\构建便携包.ps1 -Version 0.3.0
+```
+
+输出为 `packaging\whitebox-writing-portable-0.3.0.zip`。解压后双击 `StartWhiteboxPortable.bat`，不需要 WSL、Python、Node.js 或 npm；首次使用仍需要在 WebUI 中配置朋友自己的模型 API Key。
+
 在 PowerShell 中从 `launcher` 目录执行：
 
 ```powershell

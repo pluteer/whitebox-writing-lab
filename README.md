@@ -21,6 +21,7 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - 项目资产：管理正文、世界观、人物、大纲和状态文件，支持版本、Diff 和回滚。
 - Skill Registry：导入 `SKILL.md`，为节点绑定上下文 Skill 或受限子代理 Skill。
 - Windows 启动器：通过 PowerShell + WSL 检查环境、安装依赖、启动服务和查看日志。
+- Windows 便携包：提供原生 API、静态 Web 和双击启动入口，朋友无需安装 WSL、Python、Node.js 或 npm 即可运行。
 
 ## Screenshots
 
@@ -150,6 +151,14 @@ installer\构建安装包.bat
 ```
 
 在 Windows 安装 Inno Setup 6 后，双击构建脚本即可生成安装包。安装包包含源码和启动器，但不包含 WSL、Python、Node.js、npm、虚拟环境、依赖目录、数据库或密钥。详细说明见 [`launcher/README.md`](launcher/README.md)。
+
+如果只是分享给朋友，推荐使用便携包构建脚本：
+
+```powershell
+.\installer\构建便携包.ps1 -Version 0.3.0
+```
+
+将 `packaging\whitebox-writing-portable-0.3.0.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
 
 ## Project Status
 
