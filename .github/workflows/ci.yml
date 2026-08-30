@@ -45,8 +45,25 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install --upgrade pip
       - run: pip install -e ".\apps\api[dev]" pyinstaller
-      - run: .\installer\构建便携包.ps1 -Version 0.3.0 -SkipInstaller
+      - name: Build portable runtime
         shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Remove-Item -Recurse -Force packaging -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force packaging\runtime, packaging\data, packaging\logs | Out-Null
+          npm.cmd ci
+          if ($LASTEXITCODE -ne 0) { throw 'npm ci failed' }
+          npm.cmd --workspace apps/web run build
+          if ($LASTEXITCODE -ne 0) { throw 'Web build failed' }
+          python.exe -m PyInstaller --noconfirm --clean --onedir --name whitebox-api --distpath packaging\runtime --workpath packaging\build --specpath packaging apps\api\server.py
+          if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed' }
+          if (Test-Path packaging\runtime\api) { Remove-Item -Recurse -Force packaging\runtime\api }
+          Rename-Item packaging\runtime\whitebox-api api
+          New-Item -ItemType Directory -Force packaging\runtime\web | Out-Null
+          Copy-Item -Recurse -Force apps\web\dist\* packaging\runtime\web
+          Copy-Item -Force launcher\WhiteboxPortable.ps1, launcher\StartWhiteboxPortable.bat, README.md packaging
+          tar.exe -a -c -f packaging\whitebox-writing-portable-0.3.0.zip -C packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md
+          if ($LASTEXITCODE -ne 0) { throw 'Portable archive creation failed' }
       - name: Verify portable bundle
         shell: powershell
         run: |
