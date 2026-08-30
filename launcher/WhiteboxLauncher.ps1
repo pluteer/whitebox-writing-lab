@@ -38,18 +38,32 @@ function Invoke-Wsl([string]$Command, [switch]$AllowFailure) {
     $commandFile = Join-Path $RuntimeDir ("command-" + [Guid]::NewGuid().ToString("N") + ".sh")
     [IO.File]::WriteAllText($commandFile, "#!/usr/bin/env bash`n" + $Command + "`n", [Text.UTF8Encoding]::new($false))
     $wslCommandFile = Convert-WindowsPathToWsl $commandFile
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    $output = & wsl.exe bash $wslCommandFile 2>$null
-    $exitCode = $LASTEXITCODE
-    $ErrorActionPreference = $previousPreference
+    $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $processInfo.FileName = "wsl.exe"
+    $processInfo.Arguments = "bash `"$wslCommandFile`""
+    $processInfo.UseShellExecute = $false
+    $processInfo.CreateNoWindow = $true
+    $processInfo.RedirectStandardOutput = $true
+    $processInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $processInfo
+    [void]$process.Start()
+    if (-not $process.WaitForExit(8000)) {
+        try { $process.Kill() } catch {}
+        Remove-Item $commandFile -Force -ErrorAction SilentlyContinue
+        if (-not $AllowFailure) { throw "WSL command timed out after 8 seconds." }
+        return [PSCustomObject]@{ ExitCode = 124; Output = "WSL command timed out after 8 seconds." }
+    }
+    $output = $process.StandardOutput.ReadToEnd()
+    $errorOutput = $process.StandardError.ReadToEnd()
+    $exitCode = $process.ExitCode
     Remove-Item $commandFile -Force -ErrorAction SilentlyContinue
     if (-not $AllowFailure -and $exitCode -ne 0) {
-        throw ($output -join [Environment]::NewLine)
+        throw (($output + "`r`n" + $errorOutput).Trim())
     }
     return [PSCustomObject]@{
         ExitCode = $exitCode
-        Output = ($output -join [Environment]::NewLine)
+        Output = $output
     }
 }
 
@@ -399,8 +413,12 @@ $main.Controls.Add($hint)
 
 $script:selectedLog = switch ($logSelector.SelectedIndex) { 1 { "web" } 2 { "install" } default { "api" } }
 $script:installJob = $null
+$script:refreshing = $false
 
 function Refresh-LauncherState {
+    if ($script:refreshing) { return }
+    $script:refreshing = $true
+    try {
     $environment = Get-EnvironmentState
     $services = Get-ServiceState
     $environmentBox.Text = "WSL: " + $(if ($environment.Wsl) { "Ready" } else { "Missing" }) +
@@ -433,6 +451,7 @@ function Refresh-LauncherState {
     $logBox.Text = Get-LogTail $script:selectedLog
     $logBox.SelectionStart = $logBox.TextLength
     $logBox.ScrollToCaret()
+    } finally { $script:refreshing = $false }
 }
 
 $startButton.Add_Click({
