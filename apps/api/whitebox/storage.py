@@ -1274,8 +1274,9 @@ class Storage:
             )
             db.execute("UPDATE runs SET status='pending', completed_at=NULL WHERE id=?", (run_id,))
 
-    def prepare_run_for_recovery(self, run_id: str) -> None:
+    def prepare_run_for_recovery(self, run_id: str) -> int:
         now = utc_now()
+        recovered_count = 0
         with self._lock, self._connect() as db:
             running_ids = [
                 row["id"] for row in db.execute(
@@ -1283,6 +1284,7 @@ class Storage:
                 ).fetchall()
             ]
             if running_ids:
+                recovered_count = len(running_ids)
                 placeholders = ",".join("?" for _ in running_ids)
                 db.execute(
                     f"UPDATE node_attempts SET status='interrupted', completed_at=?, "
@@ -1304,6 +1306,7 @@ class Storage:
                     ),
                 )
             db.execute("UPDATE runs SET status='pending', completed_at=NULL WHERE id=?", (run_id,))
+        return recovered_count
 
     def get_artifact(self, artifact_id: str) -> Artifact | None:
         with self._connect() as db:

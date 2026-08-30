@@ -398,7 +398,9 @@ def create_app(
             if not stored_official or stored_official.revision < official_workflow.revision:
                 storage.save_workflow(official_workflow)
         for run_id in storage.list_incomplete_run_ids():
-            storage.prepare_run_for_recovery(run_id)
+            recovered_nodes = storage.prepare_run_for_recovery(run_id)
+            if recovered_nodes:
+                await engine.emit(run_id, None, "run.recovery.prepared", {"nodeCount": recovered_nodes})
             engine.start(run_id)
         yield
         for task in engine.tasks.values():

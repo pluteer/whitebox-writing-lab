@@ -461,6 +461,7 @@ def test_new_app_instance_recovers_interrupted_node_attempt(tmp_path) -> None:
     assert attempts[0]["status"] == "interrupted"
     assert attempts[1]["attempt"] == 2
     assert attempts[1]["status"] in {"succeeded", "cached"}
+    assert any(event["type"] == "run.recovery.prepared" for event in client.get(f"/api/runs/{run_id}/events").json())
 
 
 def test_webui_provider_config_is_local_masked_and_actionable(tmp_path, monkeypatch) -> None:
