@@ -1432,6 +1432,8 @@ export default function App() {
 
 function ReportSections({ content }: { content: Artifact["content"] }) {
   const text = String(content.text ?? "");
+  const structured = ["positioning", "structure", "characters", "conflicts", "hooks", "foreshadowing", "style", "techniques", "risks"] as const;
+  if (structured.some((key) => content[key] !== undefined)) return <div className="report-sections"><section><h3>总览</h3><p>{content.summary}</p><p>{content.positioning}</p></section>{structured.filter((key) => content[key] !== undefined).map((key) => <section key={key}><h3>{key}</h3><pre>{JSON.stringify(content[key], null, 2)}</pre></section>)}</div>;
   const sections = text.split(/\n(?=#{1,3}\s)/).filter(Boolean);
   return <div className="report-sections">{sections.length > 1 ? sections.map((section, index) => <section key={`${index}-${section.slice(0, 20)}`}><h3>{section.match(/^#{1,3}\s+(.+)/)?.[1] ?? `报告段落 ${index + 1}`}</h3><pre>{section.replace(/^#{1,3}\s+[^\n]+\n?/, "")}</pre></section>) : <pre>{text || JSON.stringify(content, null, 2)}</pre>}</div>;
 }

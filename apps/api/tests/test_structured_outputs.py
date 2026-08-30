@@ -2,7 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from whitebox.engine import WorkflowEngine
-from whitebox.models import DecisionSet, ReviewSet, Revision
+from whitebox.models import BookAnalysisReport, DecisionSet, ReviewSet, Revision
 
 
 def test_review_set_requires_unique_evidence_ids() -> None:
@@ -12,6 +12,12 @@ def test_review_set_requires_unique_evidence_ids() -> None:
     }
     with pytest.raises(ValidationError, match="ID 必须唯一"):
         ReviewSet.model_validate({"findings": [finding, finding], "summary": "总结"})
+
+
+def test_book_analysis_report_has_stable_categories_and_evidence_fields() -> None:
+    report = BookAnalysisReport.model_validate({"summary": "总结", "characters": [{"title": "主角", "evidence": "第一章"}], "risks": []})
+    assert report.characters[0]["evidence"] == "第一章"
+    assert report.risks == []
 
 
 def test_decision_set_must_cover_every_finding() -> None:

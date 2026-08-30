@@ -63,7 +63,7 @@ def build_reference_workflow(book: ReferenceBookRecord, title: str, connection_i
             {"id":"split","type":"flow.split","position":{"x":430,"y":220},"config":{"mode":"fixed","chunk_size":book.chunk_size}},
             {"id":"map","type":"flow.map","position":{"x":780,"y":220},"config":{"body_workflow_id":body_id,"concurrency":2}},
             {"id":"join","type":"flow.join","position":{"x":1130,"y":220},"config":{"separator":"\\n\\n---\\n\\n"}},
-            {"id":"report","type":"ai.prompt_call","position":{"x":1480,"y":220},"config":{"connection_id":connection_id,"model":model,"temperature":0.2,"system_prompt":"你是资深拆书编辑。根据分块分析生成完整、有证据的全书拆解报告，区分事实与判断。","user_prompt":"综合以下按原文顺序排列的分块分析，输出 Markdown：定位、结构、角色、冲突升级、节奏钩子、伏笔、视角文风、卖点、可复用技法和风险。\\n\\n{{input.text}}"}},
+             {"id":"report","type":"ai.prompt_call","position":{"x":1480,"y":220},"config":{"connection_id":connection_id,"model":model,"temperature":0.2,"system_prompt":"你是资深拆书编辑。根据分块分析生成结构化全书拆解报告，区分事实与判断，并为结论提供短证据。只输出 JSON。字段：summary、positioning、structure、characters、conflicts、hooks、foreshadowing、style、techniques、risks；除 summary/positioning 外各字段都是对象数组。","user_prompt":"综合以下按原文顺序排列的分块分析，输出结构化报告：\\n\\n{{input.text}}"}},
             {"id":"output","type":"workflow.output","position":{"x":1830,"y":220},"config":{"name":"book_report"}},
         ],
         "edges":[

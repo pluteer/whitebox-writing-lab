@@ -190,6 +190,16 @@ export interface Artifact {
     operation?: string;
     instruction?: string;
     summary?: string;
+    positioning?: string;
+    structure?: Array<Record<string, unknown>>;
+    characters?: Array<Record<string, unknown>>;
+    conflicts?: Array<Record<string, unknown>>;
+    hooks?: Array<Record<string, unknown>>;
+    foreshadowing?: Array<Record<string, unknown>>;
+    style?: Array<Record<string, unknown>>;
+    techniques?: Array<Record<string, unknown>>;
+    risks?: Array<Record<string, unknown>>;
+    markdown?: string;
     findings?: Array<{
       id: string; severity: string; category: string; quote: string;
       evidence: string; recommendation: string;

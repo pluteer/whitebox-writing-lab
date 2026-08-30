@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .models import (
-    Artifact, DecisionSet, ExecutionNode, QualityReport, ReviewSet, Revision,
+    Artifact, BookAnalysisReport, DecisionSet, ExecutionNode, QualityReport, ReviewSet, Revision,
     SkillToolCall, TextDiff,
 )
 from .providers import DeepSeekProvider, ProviderError
@@ -746,6 +746,13 @@ class WorkflowEngine:
                 "usage": result.usage.model_dump(),
             },
         )
+        if node.id == "report":
+            try:
+                report = BookAnalysisReport.model_validate(self._extract_json_object(result.text))
+                report.markdown = result.text
+                return report.model_dump(mode="json"), "reference.BookAnalysisReport@1", skill_artifact_ids
+            except (ValueError, TypeError):
+                pass
         if node.type in {"writing.deepseek_draft", "writing.llm_draft", "writing.custom_prompt", "ai.prompt_call"}:
             return ({
                 "text": result.text,

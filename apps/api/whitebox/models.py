@@ -480,6 +480,20 @@ class QualityReport(BaseModel):
     summary: str
 
 
+class BookAnalysisReport(BaseModel):
+    summary: str = ""
+    positioning: str = ""
+    structure: list[dict[str, Any]] = Field(default_factory=list)
+    characters: list[dict[str, Any]] = Field(default_factory=list)
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    hooks: list[dict[str, Any]] = Field(default_factory=list)
+    foreshadowing: list[dict[str, Any]] = Field(default_factory=list)
+    style: list[dict[str, Any]] = Field(default_factory=list)
+    techniques: list[dict[str, Any]] = Field(default_factory=list)
+    risks: list[dict[str, Any]] = Field(default_factory=list)
+    markdown: str = ""
+
+
 class ApprovalDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     note: str = Field(default="", max_length=1000)
