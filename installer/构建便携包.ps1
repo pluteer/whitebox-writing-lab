@@ -3,9 +3,10 @@ $ErrorActionPreference = "Stop"
 $InstallerDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Root = Split-Path -Parent $InstallerDir
 $Packaging = Join-Path $Root "packaging"
-$Python = Get-Command python.exe -ErrorAction Stop
+$Python = (Get-Command python.exe -ErrorAction Stop).Source
 $Npm = Get-Command npm.cmd -ErrorAction SilentlyContinue
 if (-not $Npm) { $Npm = Get-Command npm.exe -ErrorAction Stop }
+$Npm = $Npm.Source
 $Iscc = Get-Command ISCC.exe -ErrorAction SilentlyContinue
 if (-not $Iscc) { $Iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1 }
 if (-not $SkipInstaller -and -not $Iscc) { throw "Inno Setup 6 was not found." }
@@ -13,16 +14,18 @@ Remove-Item -Recurse -Force $Packaging -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path "$Packaging\runtime", "$Packaging\data", "$Packaging\logs" | Out-Null
 Push-Location $Root
 try {
-    & $Npm.Source ci
-    & $Npm.Source --workspace apps/web run build
-    & $Python.Source -m PyInstaller --noconfirm --clean --onedir --name whitebox-api --distpath "$Packaging\runtime" --workpath "$Packaging\build" --specpath "$Packaging" "$Root\apps\api\server.py"
+    & $Npm ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed." }
+    & $Npm --workspace apps/web run build
+    if ($LASTEXITCODE -ne 0) { throw "Web build failed." }
+    & $Python -m PyInstaller --noconfirm --clean --onedir --name whitebox-api --distpath "$Packaging\runtime" --workpath "$Packaging\build" --specpath "$Packaging" "$Root\apps\api\server.py"
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
     if (Test-Path "$Packaging\runtime\api") { Remove-Item -Recurse -Force "$Packaging\runtime\api" }
     Rename-Item "$Packaging\runtime\whitebox-api" api
     Copy-Item -Recurse -Force "$Root\apps\web\dist\*" "$Packaging\runtime\web"
     Copy-Item -Force "$Root\launcher\WhiteboxPortable.ps1", "$Root\launcher\StartWhiteboxPortable.bat", "$Root\README.md" $Packaging
     if (-not $SkipInstaller) {
-        & $Iscc.Source "$Root\installer\Whitebox.iss"
+        & $Iscc "$Root\installer\Whitebox.iss"
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
     }
     $zip = "$Packaging\whitebox-writing-portable-$Version.zip"
