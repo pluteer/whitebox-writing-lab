@@ -1,17 +1,33 @@
 import type { ApprovalRecord, Artifact, AssetCategory, AssetVersion, AssetVersionDiff, ChapterHistoryItem, DeepSeekBalance, MapRunSummary, ModelProfile, ModelProfileInput, NodeAttempt, NodeDefinition, NodeSkillTemplate, ProductionCanvas, ProductionStage, ProductionStageStatus, ProductionPreflight, Project, ProjectAsset, ProjectAssetContent, ProviderCall, ProviderConnection, ProviderConnectionInput, ProviderModel, ProviderModelInput, ProviderStatus, ReferenceBook, Run, RunEvent, Skill, SkillBindingInput, SkillBundleImportPreview, StatePatchPreview, SubflowDefinition, WorkflowDocument, WorkflowNode, WorkflowEdge, WorkflowTemplateImportPreview, WorkflowVersion } from "./types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...options,
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...options?.headers },
-  });
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || `请求失败: ${response.status}`);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 30_000);
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: options?.signal ?? controller.signal,
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...options?.headers },
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || `请求失败: ${response.status}`);
+    }
+    if (response.status === 204) return undefined as T;
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes("application/json")) {
+      throw new Error("服务返回了无效响应，请检查 API 是否正常运行。");
+    }
+    return response.json() as Promise<T>;
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === "AbortError") {
+      throw new Error(`请求超时：${url}`);
+    }
+    throw reason;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
 }
 
 export const api = {

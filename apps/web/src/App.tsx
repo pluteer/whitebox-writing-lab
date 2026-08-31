@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type * as React from "react";
 import {
   Background,
   BackgroundVariant,
@@ -26,9 +27,9 @@ import { NoteCard } from "./NoteCard";
 import { FrameCard } from "./FrameCard";
 import { toFlowBoundaryFrame, toFlowEdges, toFlowNodes } from "./workflowView";
 import { ProductionStageCard } from "./ProductionStageCard";
-import { toProductionEdges, toProductionNodes } from "./productionView";
+import { toProductionEdges, toProductionNodes, toProductionWorkflowNodes } from "./productionView";
 import { summarizeMapItems } from "./mapRunView";
-import { readReferenceFile, validateReferenceFile } from "./referenceImport";
+import { normalizeReferenceOptions, readReferenceFile, validateReferenceFile } from "./referenceImport";
 
 const nodeTypes = {
   "production.stage": ProductionStageCard,
@@ -63,6 +64,7 @@ export default function App() {
   const [productionStatuses, setProductionStatuses] = useState<ProductionStageStatus[]>([]);
   const [productionFlowNodes, setProductionFlowNodes] = useState<Node[]>([]);
   const [selectedStageId, setSelectedStageId] = useState<string | null>("chapter");
+  const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [workspaceNodeId, setWorkspaceNodeId] = useState<string | null>(null);
   const [debugRun, setDebugRun] = useState<Run | null>(null);
   const [debugAttempts, setDebugAttempts] = useState<NodeAttempt[]>([]);
@@ -74,8 +76,13 @@ export default function App() {
   const [referenceFileError, setReferenceFileError] = useState<string | null>(null);
   const [productionPreflight, setProductionPreflight] = useState<ProductionPreflight | null>(null);
   const [workflow, setWorkflow] = useState<WorkflowDocument | null>(null);
+  const [workflowDirty, setWorkflowDirty] = useState(false);
+  const [workflowNotice, setWorkflowNotice] = useState<string | null>(null);
+  const workflowRef = useRef<WorkflowDocument | null>(null);
   const [workflowStack, setWorkflowStack] = useState<WorkflowDocument[]>([]);
   const [workflows, setWorkflows] = useState<WorkflowDocument[]>([]);
+  const [productionWorkflows, setProductionWorkflows] = useState<WorkflowDocument[]>([]);
+  const [productionWorkflowByStage, setProductionWorkflowByStage] = useState<Record<string, WorkflowDocument>>({});
   const [workflowVersions, setWorkflowVersions] = useState<WorkflowVersion[]>([]);
   const [workflowDiff, setWorkflowDiff] = useState<string | null>(null);
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -105,6 +112,7 @@ export default function App() {
   const [showProjectCreator, setShowProjectCreator] = useState(false);
   const [showAssets, setShowAssets] = useState(false);
   const [showNodeLibrary, setShowNodeLibrary] = useState(false);
+  const [showWorkflowManager, setShowWorkflowManager] = useState(false);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectSlug, setNewProjectSlug] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -123,6 +131,7 @@ export default function App() {
   const [flowInstance, setFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [nodeSearch, setNodeSearch] = useState("");
   const selectedWorkflowNode = workflow?.nodes.find((node) => node.id === selectedNodeId) ?? null;
+  workflowRef.current = workflow;
   const selectedGroup = workflow?.groups?.find((group) => group.id === selectedGroupId) ?? null;
   const selectedNote = workflow?.notes?.find((note) => note.id === selectedNoteId) ?? null;
   const selectedFrame = workflow?.frames?.find((frame) => frame.id === selectedFrameId) ?? null;
@@ -133,42 +142,70 @@ export default function App() {
   const workspaceNodeRun = debugRun?.node_runs.find((item) => item.node_id === workspaceNodeId)
     ?? run?.node_runs.find((item) => item.node_id === workspaceNodeId) ?? null;
   const selectedStage = productionCanvas?.stages.find((stage) => stage.id === selectedStageId) ?? null;
+  const selectedStageWorkflow = selectedStage?.workflow_id
+    ? productionWorkflowByStage[selectedStage.id] ?? productionWorkflows.find((item) => item.id === selectedStage.workflow_id) ?? workflows.find((item) => item.id === selectedStage.workflow_id) ?? null
+    : null;
   const activeWorkflowStage = productionCanvas?.stages.find((stage) => stage.workflow_id === workflow?.id) ?? null;
   const selectedStageStatus = productionStatuses.find((status) => status.stage_id === selectedStageId) ?? null;
-  const productionNodes = productionFlowNodes;
-  const productionEdges = productionCanvas ? toProductionEdges(productionCanvas).map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId })) : [];
+  const productionProjection = useMemo(() => productionCanvas && workflows.length > 0
+    ? toProductionWorkflowNodes(productionCanvas, productionWorkflows.length ? productionWorkflows : workflows, definitions, productionWorkflowByStage)
+    : null, [productionCanvas, workflows, productionWorkflows, definitions, productionWorkflowByStage]);
+  const productionNodes = (productionProjection?.nodes ?? productionFlowNodes).map((node) => ({
+    ...node,
+    selected: node.type === "workflow.frame" && selectedFrameIds.includes(String(node.data.stageId ?? node.id).replace(/^stage-frame:/, "")),
+  }));
+  const productionEdges = productionProjection?.edges.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId }))
+    ?? (productionCanvas ? toProductionEdges(productionCanvas).map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId })) : []);
   const workflowEdges = edges.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId }));
 
   useEffect(() => {
-    api.getNodeDefinitions().then(setDefinitions).catch((reason: Error) => setError(reason.message));
-    api.getDeepSeekStatus().then(setProviderStatus).catch((reason: Error) => setError(reason.message));
-    api.getModelProfiles().then(setProfiles).catch((reason: Error) => setError(reason.message));
-    api.getProviderConnections().then(setConnections).catch((reason: Error) => setError(reason.message));
-    api.getProviderModels().then(setGlobalModels).catch((reason: Error) => setError(reason.message));
-    api.getProjects().then((items) => {
-      setProjects(items);
-      const selected = items.find((item) => item.id === projectId) ?? items[0];
-      if (selected) {
-        setProjectId(selected.id);
-        setChapterNumber(selected.current_chapter);
-      }
-    }).catch((reason: Error) => setError(reason.message));
-    api.getSkills().then(setSkills).catch((reason: Error) => setError(reason.message));
-    api.getSkillTemplates().then(setSkillTemplates).catch((reason: Error) => setError(reason.message));
-    api.getSubflows().then(setSubflows).catch((reason: Error) => setError(reason.message));
-    api.getWorkflows().then(setWorkflows).catch((reason: Error) => setError(reason.message));
-    api.getWorkflow()
-      .then((document) => {
+    const labelControls = () => {
+      document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("input, select, textarea").forEach((control, index) => {
+        if (!control.name) control.name = `whitebox-field-${index}`;
+        if (control.getAttribute("aria-label") || control.labels?.length) return;
+        const placeholder = control.getAttribute("placeholder");
+        const type = control.getAttribute("type");
+        control.setAttribute("aria-label", placeholder || (type === "file" ? "文件选择" : type === "checkbox" ? "启用选项" : "表单字段"));
+      });
+    };
+    labelControls();
+    const observer = new MutationObserver(labelControls);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    Promise.allSettled([
+      api.getNodeDefinitions(), api.getDeepSeekStatus(), api.getModelProfiles(),
+      api.getProviderConnections(), api.getProviderModels(), api.getProjects(),
+      api.getSkills(), api.getSkillTemplates(), api.getSubflows(), api.getWorkflows(), api.getWorkflow(),
+    ]).then((results) => {
+      const [defs, provider, modelProfiles, providerConnections, providerModels, projectsResult, skillsResult, templates, subflowResult, workflowsResult, workflowResult] = results;
+      if (defs.status === "fulfilled") setDefinitions(defs.value); else setError(readApiError(new Error(String(defs.reason))));
+      if (provider.status === "fulfilled") setProviderStatus(provider.value); else setError(readApiError(new Error(String(provider.reason))));
+      if (modelProfiles.status === "fulfilled") setProfiles(modelProfiles.value); else setError(readApiError(new Error(String(modelProfiles.reason))));
+      if (providerConnections.status === "fulfilled") setConnections(providerConnections.value); else setError(readApiError(new Error(String(providerConnections.reason))));
+      if (providerModels.status === "fulfilled") setGlobalModels(providerModels.value); else setError(readApiError(new Error(String(providerModels.reason))));
+      if (projectsResult.status === "fulfilled") {
+        setProjects(projectsResult.value);
+        const selected = projectsResult.value.find((item) => item.id === projectId) ?? projectsResult.value[0];
+        if (selected) { setProjectId(selected.id); setChapterNumber(selected.current_chapter); }
+      } else setError(readApiError(new Error(String(projectsResult.reason))));
+      if (skillsResult.status === "fulfilled") setSkills(skillsResult.value); else setError(readApiError(new Error(String(skillsResult.reason))));
+      if (templates.status === "fulfilled") setSkillTemplates(templates.value); else setError(readApiError(new Error(String(templates.reason))));
+      if (subflowResult.status === "fulfilled") setSubflows(subflowResult.value); else setError(readApiError(new Error(String(subflowResult.reason))));
+      if (workflowsResult.status === "fulfilled") setWorkflows(workflowsResult.value); else setError(readApiError(new Error(String(workflowsResult.reason))));
+      if (workflowResult.status !== "fulfilled") { setError(readApiError(new Error(String(workflowResult.reason)))); return; }
+      const document = workflowResult.value;
         setSelectedNodeId(null);
         setRun(null);
         setEvents([]);
         setArtifact(null);
         setApproval(null);
         setWorkflow(document);
-        setNodes(toFlowNodes(document, null, [], [], [], definitions));
-        setEdges(toFlowEdges(document, definitions));
-      })
-      .catch((reason: Error) => setError(reason.message));
+        setNodes(toFlowNodes(document, null, [], [], [], defs.status === "fulfilled" ? defs.value : []));
+        setEdges(toFlowEdges(document, defs.status === "fulfilled" ? defs.value : []));
+    });
   }, []);
 
   useEffect(() => {
@@ -185,19 +222,51 @@ export default function App() {
   }, [projectId]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => flowInstance?.fitView({ padding: canvasLevel === "production" ? 0.18 : 0.3 }), 80);
+    if (!productionCanvas || !workflows.length) {
+      setProductionWorkflows(workflows);
+      setProductionWorkflowByStage({});
+      return;
+    }
+    let active = true;
+    Promise.all(productionCanvas.stages.filter((stage) => stage.workflow_id).map(async (stage) => {
+      if (stage.workflow_revision === null || stage.workflow_revision === undefined) {
+        return workflows.find((item) => item.id === stage.workflow_id) ?? null;
+      }
+      try {
+        return (await api.getWorkflowVersion(stage.workflow_id!, stage.workflow_revision)).document;
+      } catch {
+        return workflows.find((item) => item.id === stage.workflow_id) ?? null;
+      }
+    })).then((documents) => {
+      if (!active) return;
+      const unique = new Map<string, WorkflowDocument>();
+      const byStage: Record<string, WorkflowDocument> = {};
+      const boundStages = productionCanvas.stages.filter((stage) => stage.workflow_id);
+      documents.forEach((document, index) => { if (document) { unique.set(`${document.id}:${document.revision}`, document); byStage[boundStages[index].id] = document; } });
+      setProductionWorkflows([...unique.values()]);
+      setProductionWorkflowByStage(byStage);
+    });
+    return () => { active = false; };
+  }, [productionCanvas, workflows]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => flowInstance?.fitView({ padding: canvasLevel === "production" ? 0.12 : 0.3 }), 80);
     return () => window.clearTimeout(timer);
-  }, [canvasLevel, productionCanvas?.project_id, flowInstance]);
+  }, [canvasLevel, productionCanvas?.project_id, productionCanvas?.revision, workflows.length, displayMode, flowInstance]);
 
   useEffect(() => {
     if (!productionCanvas) return;
-    setProductionFlowNodes(toProductionNodes(productionCanvas, productionStatuses, selectedStageId, workflows, displayMode === "advanced"));
-  }, [productionCanvas, productionStatuses, selectedStageId, workflows, displayMode]);
+    if (productionWorkflowByStage && Object.keys(productionWorkflowByStage).length > 0) {
+      setProductionFlowNodes(toProductionWorkflowNodes(productionCanvas, workflows, definitions, productionWorkflowByStage).nodes);
+    } else {
+      setProductionFlowNodes(toProductionNodes(productionCanvas, productionStatuses, selectedStageId, workflows, displayMode === "advanced"));
+    }
+  }, [productionCanvas, productionStatuses, selectedStageId, workflows, definitions, productionWorkflowByStage, displayMode]);
 
   useEffect(() => {
-    if (!workflow || canvasLevel !== "workflow") { setWorkflowVersions([]); return; }
+    if (!workflow || (canvasLevel !== "workflow" && !showWorkflowManager)) { setWorkflowVersions([]); return; }
     api.getWorkflowVersions(workflow.id).then(setWorkflowVersions).catch(() => setWorkflowVersions([]));
-  }, [workflow?.id, workflow?.revision, canvasLevel]);
+  }, [workflow?.id, workflow?.revision, canvasLevel, showWorkflowManager]);
 
   useEffect(() => () => {
     if (stageClickTimer.current) window.clearTimeout(stageClickTimer.current);
@@ -206,21 +275,8 @@ export default function App() {
   function activateWorkflow(document: WorkflowDocument, preserveRun = false) {
     historyPast.current = []; historyFuture.current = []; setHistoryVersion((value) => value + 1);
     setSelectedNodeId(null); setWorkspaceNodeId(null); setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null); if (!preserveRun) setRun(null); setEvents(preserveRun ? events : []); if (!preserveRun) { setArtifact(null); setApproval(null); }
-    setWorkflow(document); setNodes(toFlowNodes(document, null, profiles, connections, globalModels, definitions));
+    setWorkflow(document); setWorkflowDirty(false); setNodes(toFlowNodes(document, null, profiles, connections, globalModels, definitions));
     setEdges(toFlowEdges(document, definitions));
-  }
-
-  async function enterStage(stage: ProductionStage) {
-    setSelectedStageId(stage.id);
-    if (!stage.workflow_id) return;
-    try {
-      setWorkflowStack([]);
-      activateWorkflow(stage.workflow_revision ? (await api.getWorkflowVersion(stage.workflow_id, stage.workflow_revision)).document : await api.getWorkflow(stage.workflow_id));
-      setCanvasLevel("workflow");
-      setShowNodeLibrary(false);
-    } catch (reason) {
-      setError(readApiError(reason as Error));
-    }
   }
 
   function switchDisplayMode(mode: "simple" | "advanced") {
@@ -228,6 +284,10 @@ export default function App() {
     setDisplayMode(mode);
     setShowNodeLibrary(false);
     setSelectedNodeId(null);
+    setSelectedGroupId(null);
+    setSelectedNoteId(null);
+    setSelectedFrameId(null);
+    setContextMenu(null);
   }
 
   function returnToProduction() {
@@ -247,6 +307,9 @@ export default function App() {
 
   function onProductionNodesChange(changes: NodeChange[]) {
     setProductionFlowNodes((current) => applyNodeChanges(changes, current));
+    const selected = changes.filter((change): change is NodeChange & { id: string; selected: boolean } => change.type === "select" && "id" in change && Boolean(change.selected)).map((change) => change.id.replace(/^stage-frame:/, ""));
+    const deselected = changes.filter((change): change is NodeChange & { id: string; selected: boolean } => change.type === "select" && "id" in change && !change.selected).map((change) => change.id.replace(/^stage-frame:/, ""));
+    if (selected.length || deselected.length) setSelectedFrameIds((current) => [...new Set([...current.filter((id) => !deselected.includes(id)), ...selected])]);
     const positions = new Map(changes.flatMap((change) =>
       change.type === "position" && change.position ? [[change.id, change.position] as const] : [],
     ));
@@ -255,6 +318,44 @@ export default function App() {
 
   async function saveProductionPosition(_: unknown, node: Node) {
     if (!productionCanvas) return;
+    const childStageId = typeof node.data?.stageId === "string" ? String(node.data.stageId) : null;
+    const childNodeId = typeof node.data?.childNodeId === "string" ? String(node.data.childNodeId) : null;
+    if (childStageId && childNodeId) {
+      const stage = productionCanvas.stages.find((item) => item.id === childStageId);
+      const childWorkflow = stage?.workflow_id ? workflows.find((item) => item.id === stage.workflow_id) : null;
+      const origin = node.data.layoutOrigin as { x: number; y: number; minX: number; minY: number } | undefined;
+      const scale = Number(node.data.layoutScale ?? 1);
+      if (!stage || !childWorkflow || !origin || !Number.isFinite(scale) || scale <= 0) return;
+      const nextWorkflow = {
+        ...childWorkflow,
+        revision: childWorkflow.revision + 1,
+        nodes: childWorkflow.nodes.map((item) => item.id === childNodeId
+          ? { ...item, position: { x: origin.minX + (node.position.x - origin.x) / scale, y: origin.minY + (node.position.y - origin.y) / scale } }
+          : item),
+      };
+      try {
+        const saved = await api.saveWorkflow(nextWorkflow);
+        setWorkflows((current) => current.map((item) => item.id === saved.id ? saved : item));
+        if (workflow?.id === saved.id) setWorkflow(saved);
+      } catch (reason) { setError(readApiError(reason as Error)); }
+      return;
+    }
+    const frameStageId = node.type === "workflow.frame" && childStageId
+      ? childStageId
+      : node.id.startsWith("stage-frame:") ? node.id.slice("stage-frame:".length) : null;
+    if (frameStageId) {
+      const next = {
+        ...productionCanvas,
+        revision: productionCanvas.revision + 1,
+        stages: productionCanvas.stages.map((stage) => stage.id === frameStageId
+          ? { ...stage, position: node.position } : stage),
+      };
+      setProductionCanvas(next);
+      setProductionFlowNodes(toProductionNodes(next, productionStatuses, selectedStageId, workflows, displayMode === "advanced"));
+      try { await api.saveProductionCanvas(projectId, next); }
+      catch (reason) { setError(readApiError(reason as Error)); }
+      return;
+    }
     const next = {
       ...productionCanvas, revision: productionCanvas.revision + 1,
       stages: productionCanvas.stages.map((stage) => stage.id === node.id
@@ -290,13 +391,25 @@ export default function App() {
 
   async function arrangeProductionComponents() {
     if (!productionCanvas) return;
-    const positions = [
-      { x: 80, y: 120 }, { x: 430, y: 120 }, { x: 780, y: 120 }, { x: 1130, y: 120 },
-      { x: 1130, y: 480 }, { x: 780, y: 480 }, { x: 430, y: 480 }, { x: 80, y: 480 },
-    ];
+    const positions = productionCanvas.stages.map((_, index) => ({ x: 60 + index * 370, y: 180 }));
     const next = {
       ...productionCanvas, revision: productionCanvas.revision + 1,
       stages: productionCanvas.stages.map((stage, index) => ({ ...stage, position: positions[index] ?? { x: 80 + (index % 4) * 350, y: 840 + Math.floor(index / 4) * 320 } })),
+    };
+    try { setProductionCanvas(await api.saveProductionCanvas(projectId, next)); }
+    catch (reason) { setError(readApiError(reason as Error)); }
+  }
+
+  async function arrangeSelectedFrames() {
+    if (!productionCanvas) return;
+    const selected = productionNodes.filter((node) => node.selected && node.type === "workflow.frame");
+    if (!selected.length) { await arrangeProductionComponents(); return; }
+    const selectedIds = new Set(selected.map((node) => String(node.data.stageId ?? node.id).replace(/^stage-frame:/, "")));
+    const next = {
+      ...productionCanvas,
+      revision: productionCanvas.revision + 1,
+      stages: productionCanvas.stages.map((stage, index) => selectedIds.has(stage.id)
+        ? { ...stage, position: { x: 60 + index * 370, y: 180 } } : stage),
     };
     try { setProductionCanvas(await api.saveProductionCanvas(projectId, next)); }
     catch (reason) { setError(readApiError(reason as Error)); }
@@ -342,7 +455,7 @@ export default function App() {
       if (result.workflow) setWorkflows((current) => [result.workflow!, ...current]);
       setShowNodeLibrary(false);
       if (input.create_blank_workflow && result.workflow) {
-        activateWorkflow(result.workflow); setCanvasLevel("workflow");
+        setWorkflow(result.workflow);
       }
     } catch (reason) { setError(readApiError(reason as Error)); }
   }
@@ -387,7 +500,9 @@ export default function App() {
     if (workflow) historyPast.current.push(structuredClone(workflow));
     if (historyPast.current.length > 100) historyPast.current.shift();
     historyFuture.current = [];
-    setWorkflow(next); setHistoryVersion((value) => value + 1);
+    workflowRef.current = next;
+    setWorkflow(next); setWorkflowDirty(true); setHistoryVersion((value) => value + 1);
+    setWorkflows((current) => current.map((item) => item.id === next.id ? next : item));
   }
 
   function restoreWorkflow(document: WorkflowDocument) {
@@ -462,14 +577,6 @@ export default function App() {
 
   useEffect(() => {
     if (!run || ["succeeded", "failed", "cancelled"].includes(run.status)) return;
-    const timer = window.setInterval(() => {
-      api.getProductionStatus(projectId).then(setProductionStatuses).catch(() => undefined);
-    }, 700);
-    return () => window.clearInterval(timer);
-  }, [run?.id, run?.status, projectId]);
-
-  useEffect(() => {
-    if (!run || ["succeeded", "failed", "cancelled"].includes(run.status)) return;
     const runId = run.id;
     let active = true;
     let timer = 0;
@@ -494,7 +601,9 @@ export default function App() {
       } catch (reason) {
         setError((reason as Error).message);
       }
-      if (active) timer = window.setTimeout(poll, 400);
+      // WebSocket delivers live events; this slower fallback only covers
+      // suspended tabs and dropped connections.
+      if (active) timer = window.setTimeout(poll, 1500);
     };
     void poll();
     return () => {
@@ -941,23 +1050,31 @@ export default function App() {
   }, [workflow, nodes, selectedNodeId, selectedEdgeId, workspaceNodeId, canvasLevel, productionCanvas, definitions, projectId]);
 
   async function updateNodeFor(nodeId: string, changes: Record<string, unknown>): Promise<WorkflowDocument | null> {
-    if (!workflow) return null;
+    const currentWorkflow = workflowRef.current;
+    if (!currentWorkflow) return null;
     const next = {
-      ...workflow, revision: workflow.revision + 1,
-      nodes: workflow.nodes.map((node) => node.id === nodeId
+      ...currentWorkflow, revision: currentWorkflow.revision + 1,
+      nodes: currentWorkflow.nodes.map((node) => node.id === nodeId
         ? { ...node, config: { ...node.config, ...changes } } : node),
     };
-    if ((workflow.id === "starter" || workflow.id.startsWith("official-")) && activeWorkflowStage) {
+    const currentStage = selectedStage?.workflow_id === currentWorkflow.id
+      ? selectedStage
+      : productionCanvas?.stages.find((stage) => stage.workflow_id === currentWorkflow.id) ?? activeWorkflowStage;
+    const editingPublishedWorkflow = Boolean(currentStage?.workflow_revision !== null && currentStage?.workflow_revision !== undefined);
+    const editingSharedWorkflow = currentWorkflow.id === "starter" || currentWorkflow.id.startsWith("official-");
+    if (currentStage && (editingSharedWorkflow || editingPublishedWorkflow)) {
       const copy = {
         ...next, id: `project:${projectId}:${crypto.randomUUID()}`,
-        name: `${workflow.name.replace(/^官方 \/ /, "")} / 项目副本`, revision: 1,
+        name: `${currentWorkflow.name.replace(/^示例 \/ /, "")} / 项目草稿`, revision: 1,
       };
       commitWorkflow(copy);
       try {
         const saved = await api.saveWorkflow(copy);
-        await bindStageWorkflow(activeWorkflowStage.id, saved.id);
+        await bindStageWorkflow(currentStage.id, saved.id);
         setWorkflows((current) => [saved, ...current]);
-        activateWorkflow(saved); setSelectedNodeId(nodeId);
+        setProductionWorkflowByStage((current) => ({ ...current, [currentStage.id]: saved }));
+        activateWorkflow(saved); setSelectedNodeId(nodeId); setWorkflowDirty(true);
+        setWorkflowNotice(`已从 ${currentWorkflow.name} 创建项目草稿，并重新绑定当前 Frame。`);
         return saved;
       } catch (reason) { setError(readApiError(reason as Error)); }
       return null;
@@ -982,7 +1099,10 @@ export default function App() {
     setSaving(true);
     setError(null);
     try {
-      await api.saveWorkflow(workflow);
+      const saved = await api.saveWorkflow(workflow);
+      setWorkflow(saved);
+      setWorkflows((current) => current.map((item) => item.id === saved.id ? saved : item));
+      setWorkflowDirty(false);
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -990,9 +1110,42 @@ export default function App() {
     }
   }
 
+  async function saveWorkflowAsProjectCopy() {
+    const source = workflowRef.current;
+    if (!source) return;
+    const name = window.prompt("项目 Workflow 名称", `${source.name.replace(/^示例 \/ /, "")} / 项目版`);
+    if (!name?.trim()) return;
+    try {
+      const copy = await api.saveWorkflow({ ...structuredClone(source), id: `project:${projectId}:${crypto.randomUUID()}`, name: name.trim(), revision: 1 });
+      setWorkflows((current) => [copy, ...current.filter((item) => item.id !== copy.id)]);
+      const frame = selectedStage?.workflow_id === source.id ? selectedStage : null;
+      if (frame) {
+        await bindStageWorkflow(frame.id, copy.id, null);
+        setProductionWorkflowByStage((current) => ({ ...current, [frame.id]: copy }));
+      }
+      activateWorkflow(copy);
+      setWorkflowNotice(frame
+        ? `已将 ${source.name} 另存为 ${copy.name}，并绑定到 ${frame.title}。`
+        : `已将 ${source.name} 另存为 ${copy.name}。`);
+    } catch (reason) { setError(readApiError(reason as Error)); }
+  }
+
+  async function renameCurrentWorkflow() {
+    const source = workflowRef.current;
+    if (!source || source.id === "starter" || source.id.startsWith("official-")) {
+      setWorkflowNotice("示例 Workflow 请先另存为项目流程，再进行命名。");
+      return;
+    }
+    const name = window.prompt("Workflow 名称", source.name);
+    if (!name?.trim() || name.trim() === source.name) return;
+    commitWorkflow({ ...source, name: name.trim(), revision: source.revision + 1 });
+    setWorkflowNotice(`Workflow 已重命名为 ${name.trim()}，请保存草稿。`);
+  }
+
   async function publishWorkflowVersion() {
     if (!workflow) return;
     try {
+      if (workflowDirty) await saveWorkflow();
       const version = await api.publishWorkflow(workflow.id, "手动发布");
       setWorkflowVersions((current) => [version, ...current.filter((item) => item.revision !== version.revision)]);
     } catch (reason) { setError(readApiError(reason as Error)); }
@@ -1094,8 +1247,8 @@ export default function App() {
         <div className="workflow-title mode-title">
           <div className="view-breadcrumb">
             {canvasLevel === "workflow" && <button aria-label={workflowStack.length ? "返回父 Workflow" : "返回作品画布"} onClick={returnFromWorkflow}><ChevronLeft size={14} /></button>}
-            <div><small>{canvasLevel === "production" ? "WORKFLOW COMPONENTS" : "INTERNAL WORKFLOW"}</small><b>{canvasLevel === "production" ? projects.find((item) => item.id === projectId)?.title ?? "作品生产" : activeWorkflowStage?.title ?? workflow?.name}</b>{canvasLevel === "workflow" && <span className="draft-revision">DRAFT REV {workflow?.revision ?? "-"} · PUBLISHED {workflowVersions.length}</span>}</div>
-            {canvasLevel === "workflow" && <><ChevronRight size={12} /><select className="workflow-select" value={workflow?.id ?? ""} onChange={async (event) => activateWorkflow(await api.getWorkflow(event.target.value))}>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></>}
+             <div><small>{canvasLevel === "production" ? "WORKFLOW COMPONENTS" : "INTERNAL WORKFLOW"}</small><b>{canvasLevel === "production" ? projects.find((item) => item.id === projectId)?.title ?? "作品生产" : activeWorkflowStage?.title ?? workflow?.name}</b>{canvasLevel === "workflow" && <span className="draft-revision">DRAFT REV {workflow?.revision ?? "-"}{workflowDirty ? " · 未保存" : ""} · PUBLISHED {workflowVersions.length}</span>}</div>
+             {canvasLevel === "workflow" && <><ChevronRight size={12} /><select aria-label="当前 Workflow" className="workflow-select" value={workflow?.id ?? ""} onChange={async (event) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(event.target.value)); } catch (reason) { setError(readApiError(reason as Error)); } }}>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></>}
           </div>
           <div className="mode-switch" aria-label="工作台模式">
             <button className={displayMode === "simple" ? "active" : ""} onClick={() => switchDisplayMode("simple")}><Feather size={13} />简单</button>
@@ -1111,14 +1264,20 @@ export default function App() {
             setProjectId(event.target.value);
             if (selected) setChapterNumber(selected.current_chapter);
           }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select>
-          <label className="chapter-control">第 <input type="number" min="1" value={chapterNumber} onChange={(event) => setChapterNumber(Math.max(1, Number(event.target.value)))} /> 章</label>
-          <button className="ghost-button" onClick={() => setShowProjectCreator(true)}>新建项目</button>
-          {canvasLevel === "workflow" && <button className="ghost-button" onClick={saveWorkflow} disabled={!workflow || saving}>
+           <label className="chapter-control">第 <input aria-label="章节号" type="number" min="1" value={chapterNumber} onChange={(event) => setChapterNumber(Math.max(1, Number(event.target.value)))} /> 章</label>
+           <button className="ghost-button" onClick={() => setShowProjectCreator(true)}>新建项目</button>
+           <button className="ghost-button" onClick={() => { setShowWorkflowManager(true); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}>工作流管理</button>
+           {canvasLevel === "workflow" && workflow && <button className="ghost-button" onClick={() => void renameCurrentWorkflow()}>重命名 Workflow</button>}
+           {workflowDirty && <button className="ghost-button save-draft-button" onClick={saveWorkflow} disabled={!workflow || saving}>
+             {saving ? <Clock3 size={16} /> : <Save size={16} />} {saving ? "保存中" : "保存草稿"}
+           </button>}
+           {canvasLevel === "workflow" && <button className="ghost-button" onClick={saveWorkflow} disabled={!workflow || saving}>
             {saving ? <Clock3 size={16} /> : <Save size={16} />} {saving ? "保存中" : "保存快照"}
           </button>}
           {canvasLevel === "workflow" && <button className="ghost-button publish-button" onClick={publishWorkflowVersion} disabled={!workflow}>发布版本 {workflowVersions.length ? `v${workflowVersions.length + 1}` : ""}</button>}
           {canvasLevel === "workflow" && workflowVersions.length > 0 && <select className="version-action-select" value="" onChange={async (event) => { const [action, raw] = event.target.value.split(":"); event.target.value = ""; const revision = Number(raw); if (!revision || !workflow) return; if (action === "restore") await restoreVersion(revision); else setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }}><option value="">版本操作…</option>{workflowVersions.map((version) => <><option key={`diff-${version.revision}`} value={`diff:${version.revision}`}>查看 v{version.revision} Diff</option><option key={`restore-${version.revision}`} value={`restore:${version.revision}`}>恢复为 v{version.revision}</option></>)}</select>}
-          {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeProductionComponents}>整理布局</button>}
+           {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理布局</button>}
+           {canvasLevel === "production" && selectedFrameIds.length > 1 && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理已选 {selectedFrameIds.length} 个 Frame</button>}
           {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
           <button className="mobile-model-button" aria-label="打开模型中心" onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={16} /></button>
           <button className="run-button" onClick={() => canvasLevel === "production" ? openProductionPreflight() : startRun()} disabled={canvasLevel === "production" ? !productionCanvas : !workflow || ["running", "waiting_approval"].includes(run?.status ?? "")}>
@@ -1139,20 +1298,20 @@ export default function App() {
         </aside>
 
         <div className="canvas-wrap">
-          <div className="canvas-meta">
+           <div className="canvas-meta">
             <span>{canvasLevel === "production" ? "WORKFLOW COMPONENT MAP" : displayMode === "simple" ? "WORKFLOW STEPS" : "LOCAL EXECUTION"}</span>
             <span>{canvasLevel === "production" ? `${productionCanvas?.stages.length ?? 0} COMPONENTS / ${productionCanvas?.edges.length ?? 0} LINKS` : `${workflow?.nodes.length ?? 0} NODES / ${workflow?.edges.length ?? 0} LINKS`}</span>
           </div>
           {canvasLevel === "workflow" && displayMode === "advanced" && <div className="edge-legend"><span className="legend-arrow">→</span> 数据流：输出 → 输入 <i /> 从右侧端口拖到左侧端口</div>}
-          {canvasLevel === "workflow" && displayMode === "simple" ? <SimpleWorkflowSteps
-            workflow={workflow}
-            definitions={definitions}
-            selectedNodeId={selectedNodeId}
-            onSelect={(nodeId) => { setSelectedNodeId(nodeId); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}
-             onOpen={(nodeId) => { setSelectedNodeId(nodeId); setWorkspaceNodeId(nodeId); setDebugRun(null); }}
-             onParameters={(parameters) => { if (workflow) commitWorkflow({ ...workflow, parameters }); }}
-             onAdd={() => setShowNodeLibrary(true)}
-          /> : <ReactFlow
+           {canvasLevel === "workflow" && displayMode === "simple" ? <WritingWorkbench
+             workflow={workflow}
+             definitions={definitions}
+             selectedNodeId={selectedNodeId}
+             onSelect={(nodeId) => { setSelectedNodeId(nodeId); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}
+              onOpen={(nodeId) => { setSelectedNodeId(nodeId); setWorkspaceNodeId(nodeId); setDebugRun(null); }}
+              onParameters={(parameters) => { if (workflow) commitWorkflow({ ...workflow, parameters }); }}
+              onAdd={() => setShowNodeLibrary(true)}
+           /> : <ReactFlow
             nodes={canvasLevel === "production" ? productionNodes : displayMode === "advanced" ? [...nodes, ...(workflow && !workflow.frames?.length ? [toFlowBoundaryFrame(workflow)].filter(Boolean) as Node[] : [])] : nodes}
             edges={canvasLevel === "production" ? productionEdges : workflowEdges}
             nodeTypes={nodeTypes}
@@ -1172,10 +1331,25 @@ export default function App() {
             onNodeClick={(_, node) => {
               setSelectedEdgeId(null);
               setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false);
-              if (node.type === "production.stage") {
+              if (canvasLevel === "production" && node.data?.childNodeId && node.data?.stageId) {
+                const stageId = String(node.data.stageId);
+                const childNodeId = String(node.data.childNodeId);
+                const childWorkflow = productionCanvas?.stages.find((stage) => stage.id === stageId)?.workflow_id;
+                const document = workflows.find((item) => item.id === childWorkflow);
+                if (document) setWorkflow(document);
+                setSelectedStageId(stageId);
+                setSelectedNodeId(childNodeId);
+                setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null);
+              } else if (node.type === "production.stage" || node.type === "workflow.frame") {
+                const stageId = String(node.data.stageId ?? node.id).replace(/^stage-frame:/, "");
                 if (stageClickTimer.current) window.clearTimeout(stageClickTimer.current);
                 stageClickTimer.current = window.setTimeout(() => {
-                  setSelectedStageId(node.id);
+                  if (productionCanvas?.stages.some((stage) => stage.id === stageId)) setSelectedStageId(stageId);
+                  setSelectedFrameIds((current) => current.includes(stageId) ? current : [...current, stageId]);
+                  const stageWorkflowId = productionCanvas?.stages.find((stage) => stage.id === stageId)?.workflow_id;
+                  const stageWorkflow = workflows.find((item) => item.id === stageWorkflowId);
+                  if (stageWorkflow) setWorkflow(stageWorkflow);
+                  if (node.type === "workflow.frame") setSelectedNodeId(null);
                   stageClickTimer.current = null;
                 }, 220);
               } else if (node.type === "workflow.group") {
@@ -1189,13 +1363,16 @@ export default function App() {
               }
             }}
             onNodeDoubleClick={(_, node) => {
-              if (node.type === "production.stage") {
+              if (canvasLevel === "production" && node.data?.childNodeId && node.data?.stageId) {
+                const stageId = String(node.data.stageId);
+                const document = workflows.find((item) => item.id === productionCanvas?.stages.find((stage) => stage.id === stageId)?.workflow_id);
+                if (document) { setWorkflow(document); setSelectedStageId(stageId); setSelectedNodeId(String(node.data.childNodeId)); }
+              } else if (node.type === "production.stage") {
                 if (stageClickTimer.current) {
                   window.clearTimeout(stageClickTimer.current);
                   stageClickTimer.current = null;
                 }
-                const stage = productionCanvas?.stages.find((item) => item.id === node.id);
-                if (stage) window.setTimeout(() => void enterStage(stage), 0);
+                setSelectedStageId(node.id);
               } else if (node.type === "workflow.group" && workflow) {
                 const group = workflow.groups?.find((item) => item.id === node.id);
                 if (group) {
@@ -1234,7 +1411,27 @@ export default function App() {
             <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="#393a34" />
             <Controls position="bottom-left" showInteractive={false} />
             <MiniMap position="bottom-right" pannable zoomable nodeColor={(node) => node.type === "production.stage" ? "#9aab72" : node.type === "workflow.note" ? "#8a7d45" : node.type === "workflow.group" ? "#4d6542" : node.type === "workflow.frame" ? "#334b5d" : "#6b7462"} maskColor="#0b0c0a99" />
-          </ReactFlow>}
+           </ReactFlow>}
+           {canvasLevel === "production" && displayMode === "simple" && selectedStageWorkflow && <ProductionWorkbench
+             workflow={selectedStageWorkflow}
+             stage={selectedStage}
+             definitions={definitions}
+             selectedNodeId={selectedNodeId}
+             onSelect={(nodeId) => { setSelectedNodeId(nodeId); setSelectedStageId(selectedStage?.id ?? null); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}
+           onOpen={(nodeId) => { setSelectedNodeId(nodeId); setWorkspaceNodeId(nodeId); setDebugRun(null); }}
+           onRun={() => void startSelectedStageRun()}
+             onInputChange={(value) => { const inputNode = selectedStageWorkflow.nodes.find((node) => node.type === "mock.source" || node.type === "workflow.input"); if (inputNode) void updateNodeFor(inputNode.id, { [inputNode.type === "mock.source" ? "text" : "default"]: value }); }}
+             referenceBooks={referenceBooks}
+             importing={referenceImporting}
+             connections={connections}
+             globalModels={globalModels}
+             onImportBook={importReferenceBook}
+             onOpenReport={openStageReport}
+             status={selectedStageStatus}
+             run={run}
+             onMapItemRetry={retryMapItem}
+             onArtifactSelect={(artifactId) => api.getArtifact(artifactId).then(setArtifact).catch((reason: Error) => setError(readApiError(reason)))}
+           />}
           {!(canvasLevel === "workflow" && displayMode === "simple") && <div className="canvas-search"><input value={nodeSearch} onChange={(event) => setNodeSearch(event.target.value)} placeholder={canvasLevel === "production" ? "定位 Workflow 组件…" : "定位节点…"} />{nodeSearch && <div>{(canvasLevel === "production" ? productionNodes : nodes).filter((node) => `${node.id} ${String(node.data.label ?? node.data.title ?? "")} ${node.type}`.toLowerCase().includes(nodeSearch.toLowerCase())).slice(0, 8).map((node) => <button key={node.id} onClick={() => { flowInstance?.fitView({ nodes: [{ id: node.id }], duration: 350, padding: 0.7 }); setNodeSearch(""); }}><b>{String(node.data.label ?? node.data.title ?? node.id)}</b><code>{node.id}</code></button>)}</div>}</div>}
           <div className={`run-strip status-${run?.status ?? "idle"}`}>
             <span className="pulse-dot" />
@@ -1247,13 +1444,14 @@ export default function App() {
         <aside className="inspector">
           <div className="inspector-head">
             <div><small>INSPECTOR</small><h2>{canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary ? selectedStage ? "Workflow 组件" : "作品流程" : showNodeLibrary ? canvasLevel === "production" ? "Workflow 库" : "节点库" : showAssets ? "项目资产" : showModelCenter ? "全局设置" : selectedNote ? "Markdown 注释" : selectedFrame ? "Frame" : selectedGroup ? "节点组" : selectedWorkflowNode ? "节点配置" : "运行透视"}</h2></div>
-            {(selectedWorkflowNode || selectedGroup || selectedNote || selectedFrame || showModelCenter || showAssets || showNodeLibrary) && <button aria-label="关闭检查器" onClick={() => { setSelectedNodeId(null); setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null); setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false); }}><X size={17} /></button>}
+             {(selectedWorkflowNode || selectedGroup || selectedNote || selectedFrame || showModelCenter || showAssets || showNodeLibrary || showWorkflowManager) && <button aria-label="关闭检查器" onClick={() => { setSelectedNodeId(null); setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null); setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false); setShowWorkflowManager(false); }}><X size={17} /></button>}
           </div>
 
-          {error && <div className="error-box" role="alert">{error}</div>}
+           {error && <div className="error-box" role="alert">{error}</div>}
+           {workflowNotice && <div className="success-notice" role="status">{workflowNotice}<button aria-label="关闭提示" onClick={() => setWorkflowNotice(null)}><X size={13} /></button></div>}
 
-          {canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary ? (
-            <ProductionStageInspector stage={selectedStage} status={selectedStageStatus} workflows={workflows} referenceBooks={referenceBooks} connections={connections} globalModels={globalModels} importing={referenceImporting} fileError={referenceFileError} onFileError={setReferenceFileError} onBind={bindStageWorkflow} onParameters={updateStageParameters} onEnter={enterStage} onDelete={deleteWorkflowComponent} onImportBook={async (input) => { await importReferenceBook(input); setReferenceBooks(await api.getReferenceBooks(projectId)); }} onOpenReport={openStageReport} />
+            {showWorkflowManager ? <WorkflowManager workflow={workflow} workflows={workflows} versions={workflowVersions} productionCanvas={productionCanvas} dirty={workflowDirty} onSelect={async (id) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(id)); } catch (reason) { setError(readApiError(reason as Error)); } }} onSave={saveWorkflow} onSaveAs={saveWorkflowAsProjectCopy} onRename={renameCurrentWorkflow} onPublish={publishWorkflowVersion} onDiff={async (revision) => { if (!workflow) return; setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }} onRestore={restoreVersion} /> : canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary && !selectedWorkflowNode ? (
+            <ProductionStageInspector stage={selectedStage} status={selectedStageStatus} workflows={workflows} referenceBooks={referenceBooks} connections={connections} globalModels={globalModels} importing={referenceImporting} fileError={referenceFileError} onFileError={setReferenceFileError} onBind={bindStageWorkflow} onParameters={updateStageParameters} onDelete={deleteWorkflowComponent} onImportBook={async (input) => { await importReferenceBook(input); setReferenceBooks(await api.getReferenceBooks(projectId)); }} onOpenReport={openStageReport} />
           ) : showNodeLibrary ? (
             canvasLevel === "production" ? <WorkflowLibrary workflows={workflows} onCreate={createWorkflowComponent} /> : <NodeLibrary definitions={definitions} subflows={subflows} simple={displayMode === "simple"} onCreate={createNode} onInsertSubflow={insertSubflow} onCreateNote={createNote} onCreateFrame={createFrame} />
           ) : showAssets ? (
@@ -1318,23 +1516,12 @@ export default function App() {
               onTemperatureChange={(temperature) => updateNodeSetting("temperature", temperature)}
               onSkillsChange={(bindings) => updateNodeSetting("skill_bindings", bindings)}
               onPromptChange={(key, value) => updateNodeSetting(key, value)}
-              onFlowConfigChange={(key, value) => {
-                if (key === "open_body_workflow" && typeof value === "string") {
-                  if (workflow) setWorkflowStack((current) => [...current, workflow]);
-                  void api.getWorkflow(value).then((document) => { activateWorkflow(document); setCanvasLevel("workflow"); });
-                } else {
-                  void updateNodeSetting(key, value);
-                }
-              }}
+               onFlowConfigChange={(key, value) => void updateNodeSetting(key, value)}
               onCreateBodyWorkflow={async () => {
                 const created = await api.createBlankWorkflow(`${selectedWorkflowNode.id} / Map Body`);
                 setWorkflows((current) => [created, ...current]);
-                const updatedParent = await updateNodeFor(selectedWorkflowNode.id, { body_workflow_id: created.id });
-                if (updatedParent) {
-                  setWorkflowStack((current) => [...current, updatedParent]);
-                  activateWorkflow(created);
-                  setCanvasLevel("workflow");
-                }
+                 const updatedParent = await updateNodeFor(selectedWorkflowNode.id, { body_workflow_id: created.id });
+                 if (updatedParent) setWorkflow(updatedParent);
               }}
               onApplySkillTemplate={async (templateId) => {
                 const resolved = await api.resolveSkillTemplate(templateId);
@@ -1433,7 +1620,7 @@ export default function App() {
 function ReportSections({ content }: { content: Artifact["content"] }) {
   const text = String(content.text ?? "");
   const structured = ["positioning", "structure", "characters", "conflicts", "hooks", "foreshadowing", "style", "techniques", "risks"] as const;
-  if (structured.some((key) => content[key] !== undefined)) return <div className="report-sections"><section><h3>总览</h3><p>{content.summary}</p><p>{content.positioning}</p></section>{structured.filter((key) => content[key] !== undefined).map((key) => <section key={key}><h3>{key}</h3><pre>{JSON.stringify(content[key], null, 2)}</pre></section>)}</div>;
+  if (structured.some((key) => content[key] !== undefined)) return <div className="report-sections"><nav className="report-section-nav" aria-label="报告章节">{structured.filter((key) => content[key] !== undefined).map((key) => <a key={key} href={`#report-${key}`}>{key}</a>)}</nav><section><h3>总览</h3><p>{content.summary}</p><p>{content.positioning}</p></section>{structured.filter((key) => content[key] !== undefined).map((key) => <section key={key} id={`report-${key}`}><h3>{key}</h3><pre>{JSON.stringify(content[key], null, 2)}</pre></section>)}</div>;
   const sections = text.split(/\n(?=#{1,3}\s)/).filter(Boolean);
   return <div className="report-sections">{sections.length > 1 ? sections.map((section, index) => <section key={`${index}-${section.slice(0, 20)}`}><h3>{section.match(/^#{1,3}\s+(.+)/)?.[1] ?? `报告段落 ${index + 1}`}</h3><pre>{section.replace(/^#{1,3}\s+[^\n]+\n?/, "")}</pre></section>) : <pre>{text || JSON.stringify(content, null, 2)}</pre>}</div>;
 }
@@ -1446,8 +1633,36 @@ function ProductionPreflightModal({ preflight, stageId, onClose, onScopeChange, 
   return <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="运行作品流程预检"><div className="policy-modal production-preflight"><small>PRODUCTION PREFLIGHT</small><h2>确认运行作品流程</h2><p>先选择执行范围。确认后才会创建统一 Production Run。</p><div className="preflight-scope"><label><input type="radio" checked={scope === "all"} onChange={() => selectScope("all")} />运行全部已配置组件</label><label><input type="radio" disabled={!stageId} checked={scope === "current_downstream"} onChange={() => selectScope("current_downstream")} />从当前组件运行到下游</label></div><div className="preflight-facts"><div><b>{preflight.components.length}</b><span>组件</span></div><div><b>{preflight.node_count}</b><span>内部节点</span></div><div><b>{preflight.model_calls}</b><span>模型调用</span></div><div><b>{preflight.approval_nodes}</b><span>人工审批</span></div><div><b>{preflight.side_effects}</b><span>副作用节点</span></div></div><section className="preflight-components">{preflight.components.map((component) => <div key={component.stage_id}><span className={component.configured ? "stage-status-dot" : "stage-status-dot missing"} /><b>{component.title}</b><small>{component.configured ? `${component.node_count} 个内部节点` : "未配置 Workflow"}</small></div>)}</section>{preflight.side_effects > 0 && <label className="preflight-side-effect"><input type="checkbox" checked={allowSideEffects} onChange={(event) => toggleSideEffects(event.target.checked)} />我明确允许本次运行执行文件写入等副作用</label>}{preflight.errors.length > 0 && <div className="preflight-errors">{preflight.errors.map((error) => <p key={error}>{error}</p>)}</div>}<div className="policy-modal-actions"><button onClick={onClose}>取消</button><button className="confirm" disabled={!preflight.valid} onClick={() => void onConfirm(scope, allowSideEffects)}>确认并运行</button></div></div></div>;
 }
 
-function ProductionStageInspector({ stage, status, workflows, referenceBooks, connections, globalModels, importing, fileError, onFileError, onBind, onParameters, onEnter, onDelete, onImportBook, onOpenReport }: {
-  stage: ProductionStage | null;
+function WorkflowManager({ workflow, workflows, versions, productionCanvas, dirty, onSelect, onSave, onSaveAs, onRename, onPublish, onDiff, onRestore }: {
+  workflow: WorkflowDocument | null;
+  workflows: WorkflowDocument[];
+  versions: WorkflowVersion[];
+  productionCanvas: ProductionCanvas | null;
+  dirty: boolean;
+  onSelect: (id: string) => Promise<void>;
+  onSave: () => Promise<void>;
+  onSaveAs: () => Promise<void>;
+  onRename: () => Promise<void>;
+  onPublish: () => Promise<void>;
+  onDiff: (revision: number) => Promise<void>;
+  onRestore: (revision: number) => Promise<void>;
+}) {
+  const samples = workflows.filter((item) => item.id === "starter" || item.id.startsWith("official-"));
+  const local = workflows.filter((item) => !samples.includes(item));
+  const references = productionCanvas?.stages.filter((stage) => stage.workflow_id === workflow?.id) ?? [];
+  return <div className="inspector-body workflow-manager"><section className="workflow-manager-hero"><small>WORKFLOW REGISTRY</small><h2>工作流管理</h2><p>Workflow 是可加载、可复制、可另存为的完整流程。生产 Frame 可以引用它，也可以固定一个发布版本。</p></section><section><div className="section-label">CURRENT WORKFLOW</div>{workflow ? <div className="workflow-manager-current"><b>{workflow.name}</b><span>{workflow.id}</span><small>{workflow.nodes.length} 节点 · {workflow.edges.length} 连线 · revision {workflow.revision}{dirty ? " · 未保存" : " · 已保存"}</small><div><button onClick={() => void onSaveAs()}>另存为项目流程</button><button disabled={!dirty} onClick={() => void onSave()}>保存草稿</button><button onClick={() => void onPublish()}>发布版本</button></div></div> : <p className="empty-note">暂无当前 Workflow。</p>}</section><section><div className="section-label">PRODUCTION REFERENCES</div>{references.length ? references.map((stage) => <div className="workflow-reference" key={stage.id}><b>{stage.title}</b><span>{stage.workflow_revision == null ? "跟随当前草稿" : `固定 v${stage.workflow_revision}`}</span></div>) : <p className="empty-note">当前 Workflow 尚未绑定生产 Frame。</p>}</section><section><div className="section-label">WORKFLOWS</div><div className="workflow-manager-list">{[{ title: "示例 Workflow", items: samples }, { title: "项目 Workflow", items: local }].map((group) => <div key={group.title}><h3>{group.title}</h3>{group.items.map((item) => <button key={item.id} className={item.id === workflow?.id ? "active" : ""} onClick={() => void onSelect(item.id)}><span><b>{item.name}</b><small>{item.nodes.length} 节点 · rev {item.revision}</small></span>{samples.includes(item) ? <code>示例</code> : <code>项目</code>}</button>)}</div>)}</div></section><section><div className="section-label">PUBLISHED VERSIONS</div>{versions.length ? <div className="workflow-version-list">{versions.map((version) => <div key={version.revision}><span><b>v{version.revision}</b><small>{version.note || "无备注"}</small></span><button onClick={() => void onDiff(version.revision)}>Diff</button><button onClick={() => void onRestore(version.revision)}>恢复为草稿</button></div>)}</div> : <p className="empty-note">当前 Workflow 还没有发布版本。</p>}</section></div>;
+}
+
+type ProductionStageInspectorProps = Omit<React.ComponentProps<typeof ConfiguredProductionStageInspector>, "stage"> & { stage: ProductionStage | null };
+
+function ProductionStageInspector(props: ProductionStageInspectorProps) {
+  const { stage } = props;
+  if (!stage) return <div className="inspector-body"><div className="manifesto"><span>SIMPLE MODE</span><p>选择一个 Workflow 组件，查看它的目标、进度与内部流程。</p></div></div>;
+  return <ConfiguredProductionStageInspector {...props} stage={stage} />;
+}
+
+function ConfiguredProductionStageInspector({ stage, status, workflows, referenceBooks, connections, globalModels, importing, fileError, onFileError, onBind, onParameters, onDelete, onImportBook, onOpenReport }: {
+  stage: ProductionStage;
   status: ProductionStageStatus | null;
   workflows: WorkflowDocument[];
   referenceBooks: ReferenceBook[];
@@ -1458,26 +1673,30 @@ function ProductionStageInspector({ stage, status, workflows, referenceBooks, co
   onFileError: (value: string | null) => void;
   onBind: (stageId: string, workflowId: string | null, revision?: number | null) => Promise<void>;
   onParameters: (stageId: string, values: Record<string, unknown>) => Promise<void>;
-  onEnter: (stage: ProductionStage) => Promise<void>;
   onDelete: (stageId: string) => Promise<void>;
   onImportBook: (input: { filename: string; content: string; chunk_size: number; connection_id: string; model: string; temperature: number }) => Promise<void>;
   onOpenReport: (status: ProductionStageStatus) => Promise<void>;
 }) {
-  if (!stage) return <div className="inspector-body"><div className="manifesto"><span>SIMPLE MODE</span><p>选择一个 Workflow 组件，查看它的目标、进度与内部流程。</p></div></div>;
-  const latestStatus = status?.latest_run_status ?? "未运行";
+  const [bookFile, setBookFile] = useState<{ filename: string; content: string; size: number } | null>(null);
+    const [chunkSize, setChunkSize] = useState(12000);
+  const [temperature, setTemperature] = useState(0.2);
+  const [modelKey, setModelKey] = useState("");
+  const [versions, setVersions] = useState<WorkflowVersion[]>([]);
   const boundWorkflow = workflows.find((item) => item.id === stage.workflow_id);
   const parameterValues = { ...Object.fromEntries((boundWorkflow?.parameters ?? []).map((parameter) => [parameter.id, parameter.default])), ...stage.parameter_values };
-  const [bookFile, setBookFile] = useState<{ filename: string; content: string; size: number } | null>(null);
-  const [chunkSize, setChunkSize] = useState(12000);
-  const [temperature, setTemperature] = useState(0.2);
-  const [modelKey, setModelKey] = useState(globalModels[0] ? globalModelKey(globalModels[0].connection_id, globalModels[0].model_id) : "");
-  const [versions, setVersions] = useState<WorkflowVersion[]>([]);
   const selectedModel = globalModels.find((item) => globalModelKey(item.connection_id, item.model_id) === modelKey);
-  useEffect(() => { if (stage.workflow_id) api.getWorkflowVersions(stage.workflow_id).then(setVersions).catch(() => setVersions([])); else setVersions([]); }, [stage.workflow_id]);
+  useEffect(() => {
+    if (!modelKey && globalModels[0]) setModelKey(globalModelKey(globalModels[0].connection_id, globalModels[0].model_id));
+  }, [globalModels, modelKey]);
+  useEffect(() => {
+    if (stage.workflow_id) api.getWorkflowVersions(stage.workflow_id).then(setVersions).catch(() => setVersions([]));
+    else setVersions([]);
+  }, [stage.workflow_id]);
+  const latestStatus = status?.latest_run_status ?? "未运行";
   return <div className="inspector-body production-inspector">
      <section className="stage-hero"><small>PRODUCTION STAGE</small><span>{stage.type.replaceAll("_", " ")}</span><h2>{stage.title}</h2><p>{stage.description}</p></section>{boundWorkflow?.parameters?.length ? <section><div className="section-label">SIMPLE PARAMETERS</div>{boundWorkflow.parameters.map((parameter) => <label className="stage-parameter" key={parameter.id}><span>{parameter.title}<small>{parameter.description}</small></span>{parameter.type === "boolean" ? <input type="checkbox" checked={Boolean(parameterValues[parameter.id])} onChange={(event) => void onParameters(stage.id, { ...parameterValues, [parameter.id]: event.target.checked })} /> : <input type={parameter.type === "string" ? "text" : "number"} value={String(parameterValues[parameter.id] ?? "")} onChange={(event) => void onParameters(stage.id, { ...parameterValues, [parameter.id]: parameter.type === "integer" ? Number.parseInt(event.target.value, 10) : parameter.type === "number" ? Number(event.target.value) : event.target.value })} />}</label>)}</section> : null}
     <section><div className="section-label">STAGE OVERVIEW</div><div className="stage-facts"><div><small>内部步骤</small><b>{status?.node_count ?? 0}</b></div><div><small>最近状态</small><b className={`text-${latestStatus}`}>{latestStatus}</b></div><div><small>流程状态</small><b>{status?.configured ? "已配置" : "待配置"}</b></div></div>{status?.progress_total ? <div className="stage-progress-detail"><span>流程进度</span><b>{status.progress_completed}/{status.progress_total}</b><i><em style={{ width: `${Math.round(((status.progress_completed ?? 0) / status.progress_total) * 100)}%` }} /></i></div> : null}</section>
-     <section><div className="section-label">INTERNAL WORKFLOW</div><label className="field-label">绑定可复用流程</label><select value={stage.workflow_id ?? ""} onChange={(event) => onBind(stage.id, event.target.value || null, null)}><option value="">尚未配置</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.nodes.length} 步</option>)}</select>{stage.workflow_id && versions.length > 0 && <><label className="field-label">固定发布版本</label><select value={String(stage.workflow_revision ?? "")} onChange={(event) => onBind(stage.id, stage.workflow_id, event.target.value ? Number(event.target.value) : null)}><option value="">跟随当前草稿</option>{versions.map((version) => <option key={version.revision} value={version.revision}>v{version.revision}{version.note ? ` · ${version.note}` : ""}</option>)}</select></>}{!stage.workflow_id && status?.official_workflow_id && <button className="official-workflow-button" onClick={() => onBind(stage.id, status.official_workflow_id)}><Feather size={14} />使用官方阶段流程</button>}<p className="section-help">简单模式可编辑步骤、Prompt、模型和 Skill；复杂模式进一步开放端口、分支、控制流和插件节点。固定版本后，草稿修改不会影响此组件。</p><button className="enter-workflow-button" disabled={!stage.workflow_id} onClick={() => onEnter(stage)}><Wrench size={15} />进入内部 Workflow<ChevronRight size={15} /></button></section>
+      <section><div className="section-label">WORKFLOW FRAME</div><label className="field-label">绑定可复用流程</label><select value={stage.workflow_id ?? ""} onChange={(event) => onBind(stage.id, event.target.value || null, null)}><option value="">尚未配置</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.nodes.length} 步</option>)}</select>{stage.workflow_id && versions.length > 0 && <><label className="field-label">固定发布版本</label><select value={String(stage.workflow_revision ?? "")} onChange={(event) => onBind(stage.id, stage.workflow_id, event.target.value ? Number(event.target.value) : null)}><option value="">跟随当前草稿</option>{versions.map((version) => <option key={version.revision} value={version.revision}>v{version.revision}{version.note ? ` · ${version.note}` : ""}</option>)}</select></>}{!stage.workflow_id && status?.official_workflow_id && <button className="official-workflow-button" onClick={() => onBind(stage.id, status.official_workflow_id)}><Feather size={14} />加载示例流程</button>}<p className="section-help">Workflow 是可复用的完整样例或项目流程。固定版本只作为生产快照；直接编辑节点时会自动创建当前项目草稿，不修改原示例。</p></section>
      {stage.title === "拆书分析" && <section className="reference-import-panel"><div className="section-label">REFERENCE BOOK</div><h3>导入整本 TXT / Markdown</h3><p className="section-help">原文保存为当前项目的不可变参考资料，并生成可下钻的 Split → Map → Join 分析流程。</p>{referenceBooks.map((book) => <div className="reference-file-summary" key={book.id}><b>{book.original_name}</b><span>{Math.round(book.byte_size / 1024)} KB · {book.chunk_count} 个分块 · SHA {book.content_hash.slice(0, 12)}</span></div>)}{referenceBooks.length > 0 && <p className="section-help">再次导入相同原文和分块大小会复用现有流程；更换分块大小会创建新的分析版本。</p>}<input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" disabled={importing} onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; const validationError = validateReferenceFile(file); onFileError(validationError); if (validationError) return; try { setBookFile({ filename: file.name, content: await readReferenceFile(file), size: file.size }); } catch { onFileError("文件必须是有效的 UTF-8 文本。"); } }} />{fileError && <p className="reference-file-error" role="alert">{fileError}</p>}{bookFile && <div className="reference-file-summary"><b>{bookFile.filename}</b><span>{Math.round(bookFile.size / 1024)} KB · {bookFile.content.length.toLocaleString()} 字符</span></div>}<label className="field-label">分块字符数</label><input type="number" min="1000" max="100000" disabled={importing} value={chunkSize} onChange={(event) => setChunkSize(Number(event.target.value))} /><label className="field-label">分析模型</label><select value={modelKey} disabled={importing} onChange={(event) => setModelKey(event.target.value)}>{connections.map((connection) => { const models = globalModels.filter((item) => item.connection_id === connection.id); return models.length ? <optgroup key={connection.id} label={connection.name}>{models.map((model) => <option key={model.model_id} value={globalModelKey(model.connection_id, model.model_id)}>{model.name}</option>)}</optgroup> : null; })}</select><label className="field-label">Temperature</label><input type="number" min="0" max="2" step="0.1" disabled={importing} value={temperature} onChange={(event) => setTemperature(Number(event.target.value))} /><button className="primary-panel-button" disabled={importing || !bookFile || !selectedModel} onClick={async () => { if (!bookFile || !selectedModel) return; await onImportBook({ filename: bookFile.filename, content: bookFile.content, chunk_size: chunkSize, connection_id: selectedModel.connection_id, model: selectedModel.model_id, temperature }); setBookFile(null); }}>{importing ? "正在生成拆书流程…" : "导入并生成拆书流程"}</button></section>}
      {status?.latest_run_id && <section><div className="section-label">LATEST EVIDENCE</div><code className="stage-run-id">RUN {status.latest_run_id}</code>{stage.title === "拆书分析" && status.latest_run_status === "succeeded" && <button className="report-open-button" onClick={() => onOpenReport(status)}><FileSearch size={14} />查看拆书报告</button>}</section>}
     <button className="danger-panel-button" onClick={() => onDelete(stage.id)}>从作品画布移除此组件</button>
@@ -1489,7 +1708,83 @@ function ParameterEditor({ workflow, parameters, onParameters }: { workflow: Wor
   return <div className="simple-parameters-editor"><b>公开业务参数</b>{parameters.map((parameter) => { const target = workflow.nodes.find((node) => node.id === parameter.target_node_id); const configKeys = target ? Object.keys(target.config).filter((key) => !["connection_id", "model"].includes(key)) : []; return <div className="simple-parameter-editor" key={parameter.id}><div className="simple-parameter-row"><input value={parameter.title} aria-label={`${parameter.id} 参数名称`} onChange={(event) => update(parameter.id, { title: event.target.value })} /><select aria-label={`${parameter.id} 参数类型`} value={parameter.type} onChange={(event) => update(parameter.id, { type: event.target.value as WorkflowParameter["type"] })}><option value="string">文本</option><option value="number">数字</option><option value="integer">整数</option><option value="boolean">布尔</option></select><button onClick={() => onParameters(parameters.filter((item) => item.id !== parameter.id))}>删除</button></div><div className="simple-parameter-row"><input placeholder="说明" value={parameter.description ?? ""} onChange={(event) => update(parameter.id, { description: event.target.value })} /><input placeholder="默认值" value={String(parameter.default ?? "")} disabled={parameter.type === "boolean"} onChange={(event) => update(parameter.id, { default: parameter.type === "number" ? Number(event.target.value) : parameter.type === "integer" ? Number.parseInt(event.target.value, 10) : event.target.value })} /><select aria-label={`${parameter.id} 目标节点`} value={parameter.target_node_id ?? ""} onChange={(event) => update(parameter.id, { target_node_id: event.target.value || null, target_config_key: null })}><option value="">目标节点</option>{workflow.nodes.filter((node) => node.type.startsWith("ai.") || node.type.startsWith("writing.")) .map((node) => <option key={node.id} value={node.id}>{node.id}</option>)}</select><select aria-label={`${parameter.id} 目标字段`} value={parameter.target_config_key ?? ""} onChange={(event) => update(parameter.id, { target_config_key: event.target.value || null })}><option value="">目标字段</option>{configKeys.map((key) => <option key={key} value={key}>{key}</option>)}</select></div></div>; })}<button onClick={() => { const node = workflow.nodes.find((item) => item.type === "ai.prompt_call" || item.type === "ai.agent_task"); if (!node) return; const id = `parameter_${parameters.length + 1}`; onParameters([...parameters, { id, title: "新参数", type: "string", default: "", target_node_id: node.id, target_config_key: "user_prompt", description: "" }]); }}>+ 添加公开参数</button></div>;
 }
 
-function SimpleWorkflowSteps({ workflow, definitions, selectedNodeId, onSelect, onOpen, onParameters, onAdd }: {
+function BookWorkbenchControls({ referenceBooks, importing, connections, globalModels, bookFile, setBookFile, chunkSize, setChunkSize, bookModel, setBookModel, temperature, setTemperature, selectedModel, onImportBook, status, onOpenReport, mapSummary, onMapItemRetry, onArtifactSelect }: {
+  referenceBooks: ReferenceBook[]; importing: boolean; connections: ProviderConnection[]; globalModels: ProviderModel[];
+  bookFile: { filename: string; content: string; size: number } | null;
+  setBookFile: (file: { filename: string; content: string; size: number } | null) => void;
+  chunkSize: number; setChunkSize: (value: number) => void; bookModel: string; setBookModel: (value: string) => void;
+  temperature: number; setTemperature: (value: number) => void; selectedModel?: ProviderModel;
+  onImportBook: (input: { filename: string; content: string; chunk_size: number; connection_id: string; model: string; temperature: number }) => Promise<void>;
+  status: ProductionStageStatus | null; onOpenReport: (status: ProductionStageStatus) => Promise<void>;
+  mapSummary: MapRunSummary | null;
+  onMapItemRetry: (nodeRunId: string) => void;
+  onArtifactSelect: (artifactId: string) => void;
+}) {
+  return <div className="book-workbench-controls">
+    <div className="workbench-step-heading"><b>1</b><span><strong>导入原文</strong><small>TXT / Markdown，原文会保存为不可变参考资料。</small></span></div>
+    <input type="file" accept=".txt,.md,.markdown,text/plain,text/markdown" disabled={importing} aria-label="拆书原文" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; if (validateReferenceFile(file)) { setBookFile(null); return; } try { setBookFile({ filename: file.name, content: await readReferenceFile(file), size: file.size }); } catch { setBookFile(null); } }} />
+    {bookFile && <div className="reference-file-summary"><b>{bookFile.filename}</b><span>{bookFile.content.length.toLocaleString()} 字符</span></div>}
+    <div className="workbench-step-heading"><b>2</b><span><strong>选择分析方式</strong><small>分块越小越细，分块越大上下文越完整。</small></span></div>
+    <label className="field-label">分块字符数<input type="number" min="1000" max="100000" value={chunkSize} disabled={importing} onChange={(event) => setChunkSize(Number(event.target.value))} /></label>
+    <label className="field-label">分析模型<select value={bookModel} disabled={importing} onChange={(event) => setBookModel(event.target.value)}>{connections.map((connection) => { const models = globalModels.filter((item) => item.connection_id === connection.id); return models.length ? <optgroup key={connection.id} label={connection.name}>{models.map((model) => <option key={model.model_id} value={globalModelKey(model.connection_id, model.model_id)}>{model.name}</option>)}</optgroup> : null; })}</select></label>
+    <label className="field-label">分析温度<input type="number" min="0" max="2" step="0.1" value={temperature} disabled={importing} onChange={(event) => setTemperature(Number(event.target.value))} /></label>
+    <button className="primary-panel-button" disabled={!bookFile || !selectedModel || importing} onClick={() => { if (!bookFile || !selectedModel) return; const options = normalizeReferenceOptions(chunkSize, temperature); setChunkSize(options.chunkSize); setTemperature(options.temperature); void onImportBook({ filename: bookFile.filename, content: bookFile.content, chunk_size: options.chunkSize, connection_id: selectedModel.connection_id, model: selectedModel.model_id, temperature: options.temperature }); }}>{importing ? "正在导入…" : referenceBooks.length ? "再次导入 / 新建分析版本" : "导入并创建分析流程"}</button>
+    <div className="workbench-step-heading"><b>3</b><span><strong>运行并查看结果</strong><small>Map 会显示每个分块进度，完成后生成总报告。</small></span></div>
+    {status?.latest_run_id && <div className="book-run-status"><span>最近运行：{status.latest_run_status ?? "未运行"}</span>{status.latest_run_status === "succeeded" && <button onClick={() => void onOpenReport(status)}>查看拆书报告</button>}</div>}
+    {mapSummary && <div className="book-map-summary"><div><b>{mapSummary.succeeded_items}/{mapSummary.total_items}</b><span>分块完成</span></div><div><b>{mapSummary.failed_items}</b><span>失败</span></div><div><b>{mapSummary.model_calls}</b><span>模型调用</span></div><div><b>{mapSummary.total_tokens}</b><span>Tokens</span></div>{mapSummary.items.filter((item) => item.status === "failed").slice(0, 5).map((item) => <div className="book-map-failed" key={item.item_id}><span>{item.item_id} 失败</span>{item.error && <small>{item.error}</small>}{item.output_artifact_id && <button onClick={() => onArtifactSelect(item.output_artifact_id!)}>结果</button>}{item.failed_node_run_id && <button onClick={() => onMapItemRetry(item.failed_node_run_id!)}>重试</button>}</div>)}</div>}
+  </div>;
+}
+
+function ProductionWorkbench({ workflow, stage, definitions, selectedNodeId, onSelect, onOpen, onRun, onInputChange, referenceBooks, importing, connections, globalModels, onImportBook, onOpenReport, status, run, onMapItemRetry, onArtifactSelect }: {
+  workflow: WorkflowDocument;
+  stage: ProductionStage | null;
+  definitions: NodeDefinition[];
+  selectedNodeId: string | null;
+  onSelect: (nodeId: string) => void;
+  onOpen: (nodeId: string) => void;
+  onRun: () => void;
+  onInputChange: (value: string) => void;
+  referenceBooks: ReferenceBook[];
+  importing: boolean;
+  connections: ProviderConnection[];
+  globalModels: ProviderModel[];
+  onImportBook: (input: { filename: string; content: string; chunk_size: number; connection_id: string; model: string; temperature: number }) => Promise<void>;
+  onOpenReport: (status: ProductionStageStatus) => Promise<void>;
+  status: ProductionStageStatus | null;
+  run: Run | null;
+  onMapItemRetry: (nodeRunId: string) => void;
+  onArtifactSelect: (artifactId: string) => void;
+}) {
+  const aiNodes = workflow.nodes.filter((node) => isLlmNodeType(node.type));
+  const inputNode = workflow.nodes.find((node) => node.type === "mock.source" || node.type === "workflow.input");
+  const inputValue = String(inputNode?.config.text ?? inputNode?.config.default ?? "");
+  const [bookFile, setBookFile] = useState<{ filename: string; content: string; size: number } | null>(null);
+  const [chunkSize, setChunkSize] = useState(12000);
+  const [bookModel, setBookModel] = useState("");
+  const [bookTemperature, setBookTemperature] = useState(0.2);
+  const selectedBookModel = globalModels.find((model) => globalModelKey(model.connection_id, model.model_id) === bookModel);
+  const isBookAnalysis = stage?.title === "拆书分析";
+  const [mapSummary, setMapSummary] = useState<MapRunSummary | null>(null);
+  const mapNodeRun = run?.node_runs.find((item) => item.node_id === "map" || item.node_id.endsWith("/map")) ?? null;
+  useEffect(() => {
+    if (!isBookAnalysis || !mapNodeRun) { setMapSummary(null); return; }
+    let active = true;
+    const load = () => api.getMapRunSummary(mapNodeRun.id).then((summary) => { if (active) setMapSummary(summary); }).catch(() => { if (active) setMapSummary(null); });
+    void load();
+    const timer = window.setInterval(load, ["succeeded", "failed", "cancelled"].includes(run?.status ?? "") ? 3000 : 1000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [isBookAnalysis, mapNodeRun?.id, run?.status]);
+  useEffect(() => { if (!bookModel && globalModels[0]) setBookModel(globalModelKey(globalModels[0].connection_id, globalModels[0].model_id)); }, [globalModels, bookModel]);
+  return <section className={`production-workbench ${isBookAnalysis ? "book-workbench" : ""}`} aria-label={isBookAnalysis ? "拆书工作台" : "简单写作工作台"}>
+    <div className="production-workbench-head"><div><small>WRITING DESK</small><h2>{stage?.title ?? workflow.name}</h2><p>{stage?.description ?? "选择一个步骤开始编辑"}</p></div><button className="run-button" onClick={onRun}>运行当前阶段</button></div>
+    {isBookAnalysis ? <BookWorkbenchControls referenceBooks={referenceBooks} importing={importing} connections={connections} globalModels={globalModels} bookFile={bookFile} setBookFile={setBookFile} chunkSize={chunkSize} setChunkSize={setChunkSize} bookModel={bookModel} setBookModel={setBookModel} temperature={bookTemperature} setTemperature={setBookTemperature} selectedModel={selectedBookModel} onImportBook={onImportBook} status={status} onOpenReport={onOpenReport} mapSummary={mapSummary} onMapItemRetry={onMapItemRetry} onArtifactSelect={onArtifactSelect} /> : <label className="workbench-input-label">本次写作目标<textarea value={inputValue} onChange={(event) => onInputChange(event.target.value)} placeholder="写下本章要发生什么、人物要做什么，或粘贴待处理文本…" /></label>}
+    <div className="production-workbench-stats"><span><b>{workflow.nodes.length}</b> 子节点</span><span><b>{aiNodes.length}</b> AI 步骤</span><span><b>{workflow.edges.length}</b> 条连线</span></div>
+    <div className="production-workbench-steps">{workflow.nodes.map((node, index) => { const definition = definitions.find((item) => item.type === node.type); return <button key={node.id} className={node.id === selectedNodeId ? "active" : ""} onClick={() => onSelect(node.id)} onDoubleClick={() => onOpen(node.id)}><strong>{String(index + 1).padStart(2, "0")}</strong><span><small>{definition?.category?.toUpperCase() ?? "STEP"}</small><b>{String(node.config.title ?? definition?.title ?? node.type)}</b><em>{String(node.config.user_prompt ?? node.config.instruction ?? node.config.default ?? definition?.description ?? "")}</em></span><code>{node.type}</code></button>; })}</div>
+    <p className="production-workbench-hint">简单模式只收起复杂配置，不隐藏节点。点击节点编辑，双击打开调试；切换“编辑”查看完整 ComfyUI 画布。</p>
+  </section>;
+}
+
+function WritingWorkbench({ workflow, definitions, selectedNodeId, onSelect, onOpen, onParameters, onAdd }: {
   workflow: WorkflowDocument | null;
   definitions: NodeDefinition[];
   selectedNodeId: string | null;
@@ -1518,16 +1813,18 @@ function SimpleWorkflowSteps({ workflow, definitions, selectedNodeId, onSelect, 
     }
   }
   for (const node of workflow.nodes) if (!ordered.includes(node)) ordered.push(node);
-  return <div className="simple-steps-view">
-      <header><small>SIMPLE WORKFLOW</small><h2>{workflow.name}</h2><p>点击步骤即可修改 Prompt、模型和 Skill。切换复杂模式可编辑端口、分支和控制流。</p><ParameterEditor workflow={workflow} parameters={parameters} onParameters={onParameters} /></header>
+  const aiNodes = ordered.filter((node) => isLlmNodeType(node.type));
+  const firstAi = aiNodes[0];
+  return <div className="simple-steps-view writing-workbench">
+      <header><small>WRITING WORKBENCH</small><h2>{workflow.name}</h2><p>先写目标，再逐步生成、检查和修改。每一步都能打开编辑，复杂模式可继续查看完整节点与证据。</p><div className="workbench-quick-actions"><button onClick={() => firstAi && onOpen(firstAi.id)}>打开主写作步骤</button><button onClick={onAdd}>添加步骤</button><span>{ordered.length} 个步骤 · {aiNodes.length} 个 AI 步骤</span></div><div className="workbench-guide"><article><b>Prompt Call</b><span>一次模型请求。适合起草、改写、总结、审查，输入和输出都清楚可控。</span></article><article><b>Agent Task</b><span>受限多轮任务。只有绑定 Skill 声明的工具才能使用，适合查资料、拆解和需要反复判断的工作。</span></article><article><b>拆书怎么用</b><span>进入“拆书分析”组件，选择 TXT/Markdown、分块大小和模型，导入后运行生成报告，再按需写入大纲资产。</span></article></div><ParameterEditor workflow={workflow} parameters={parameters} onParameters={onParameters} /></header>
     <div className="simple-step-list">{ordered.map((node, index) => {
       const definition = definitions.find((item) => item.type === node.type);
       const isAi = isLlmNodeType(node.type);
       return <div className="simple-step-wrap" key={node.id}>
         {index > 0 && <div className="simple-step-arrow"><span>↓</span></div>}
-        <button className={`simple-step-card ${node.id === selectedNodeId ? "active" : ""}`} onClick={() => onSelect(node.id)} onDoubleClick={() => onOpen(node.id)}>
+         <button className={`simple-step-card ${node.id === selectedNodeId ? "active" : ""}`} onClick={() => onSelect(node.id)} onDoubleClick={() => onOpen(node.id)}>
           <span className="simple-step-number">{String(index + 1).padStart(2, "0")}</span>
-          <span><small>{isAi ? "AI STEP" : definition?.category?.toUpperCase() ?? "STEP"}</small><b>{definition?.title ?? node.type}</b><em>{String(node.config.user_prompt ?? node.config.instruction ?? node.config.default ?? definition?.description ?? "")}</em></span>
+           <span><small>{isAi ? "AI STEP" : definition?.category?.toUpperCase() ?? "STEP"}</small><b>{node.config.title ? String(node.config.title) : definition?.title ?? node.type}</b><em>{String(node.config.user_prompt ?? node.config.instruction ?? node.config.default ?? definition?.description ?? "")}</em></span>
           <code>{isAi ? `${node.config.model ?? "未选择模型"}` : node.type}</code>
         </button>
       </div>;
@@ -1548,8 +1845,8 @@ function WorkflowLibrary({ workflows, onCreate }: {
   const mine = filtered.filter((item) => !official.includes(item));
   return <div className="inspector-body workflow-library">
     <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 Workflow…" />
-    <section className="blank-workflow-card"><div className="section-label">QUICK CREATE</div><h3>空白 Workflow</h3><p>创建项目私有组件，内部预置 Input 与 Output，然后立即进入编辑。</p><input value={blankName} onChange={(event) => setBlankName(event.target.value)} placeholder="例如：拆书分析" /><textarea value={blankDescription} onChange={(event) => setBlankDescription(event.target.value)} placeholder="这个 Workflow 完成什么任务？" /><button className="primary-panel-button" disabled={!blankName.trim()} onClick={async () => { await onCreate({ title: blankName.trim(), description: blankDescription.trim(), create_blank_workflow: true }); setBlankName(""); setBlankDescription(""); }}>创建并进入编辑</button></section>
-    {[{ title: "OFFICIAL WORKFLOWS", items: official, source: "Official" }, { title: "MY WORKFLOWS", items: mine, source: "Local" }].map((group) => group.items.length > 0 && <section key={group.title}><div className="section-label">{group.title}</div>{group.items.map((item) => <button className="workflow-library-item" key={item.id} onClick={() => onCreate({ title: item.name.replace(/^官方 \/ /, ""), description: `${group.source} Workflow`, workflow_id: item.id })}><span><b>{item.name}</b><small>{item.nodes.length} 个节点 · {item.edges.length} 条连线</small></span><code>{group.source}</code><ChevronRight size={14} /></button>)}</section>)}
+     <section className="blank-workflow-card"><div className="section-label">QUICK CREATE</div><h3>空白 Workflow</h3><p>创建项目私有组件，内部预置 Input 与 Output，并直接显示在作品画布的 Frame 中。</p><input value={blankName} onChange={(event) => setBlankName(event.target.value)} placeholder="例如：拆书分析" /><textarea value={blankDescription} onChange={(event) => setBlankDescription(event.target.value)} placeholder="这个 Workflow 完成什么任务？" /><button className="primary-panel-button" disabled={!blankName.trim()} onClick={async () => { await onCreate({ title: blankName.trim(), description: blankDescription.trim(), create_blank_workflow: true }); setBlankName(""); setBlankDescription(""); }}>创建组件</button></section>
+    {[{ title: "EXAMPLE WORKFLOWS", items: official, source: "Example" }, { title: "MY WORKFLOWS", items: mine, source: "Local" }].map((group) => group.items.length > 0 && <section key={group.title}><div className="section-label">{group.title}</div>{group.items.map((item) => <button className="workflow-library-item" key={item.id} onClick={() => onCreate({ title: item.name.replace(/^官方 \/ /, ""), description: `${group.source} Workflow`, workflow_id: item.id })}><span><b>{item.name}</b><small>{item.nodes.length} 个节点 · {item.edges.length} 条连线</small></span><code>{group.source}</code><ChevronRight size={14} /></button>)}</section>)}
   </div>;
 }
 
@@ -1829,7 +2126,7 @@ function NodeInspector({
        </section>
        {node.type === "flow.split" && <section><div className="section-label">SPLIT CONFIGURATION</div><label className="field-label">拆分模式</label><select value={String(node.config.mode ?? "paragraph")} onChange={(event) => onFlowConfigChange("mode", event.target.value)}><option value="paragraph">空段落</option><option value="chapter">章节标题</option><option value="heading">Markdown 标题</option><option value="fixed">固定字符数</option></select>{node.config.mode === "fixed" && <><label className="field-label">最大字符数</label><input type="number" min="100" value={Number(node.config.chunk_size ?? 12000)} onChange={(event) => onFlowConfigChange("chunk_size", Number(event.target.value))} /></>}</section>}
        {node.type === "flow.join" && <section><div className="section-label">JOIN CONFIGURATION</div><label className="field-label">分隔符</label><textarea value={String(node.config.separator ?? "\n\n")} onChange={(event) => onFlowConfigChange("separator", event.target.value)} /></section>}
-        {node.type === "flow.map" && <section><div className="section-label">MAP CONFIGURATION</div><label className="field-label">Map Body Workflow</label><select value={String(node.config.body_workflow_id ?? "")} onChange={(event) => onFlowConfigChange("body_workflow_id", event.target.value)}><option value="">选择 Body Workflow…</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.nodes.length} 节点</option>)}</select>{!node.config.body_workflow_id && <button className="official-workflow-button" onClick={() => void onCreateBodyWorkflow()}><Feather size={14} />创建空白 Map Body</button>}{Boolean(node.config.body_workflow_id) && <button className="enter-workflow-button" onClick={() => onFlowConfigChange("open_body_workflow", String(node.config.body_workflow_id))}><Wrench size={14} />进入 Map Body 编辑</button>}<label className="field-label">并发数</label><input type="number" min="1" max="8" value={Number(node.config.concurrency ?? 1)} onChange={(event) => onFlowConfigChange("concurrency", Number(event.target.value))} /></section>}
+        {node.type === "flow.map" && <section><div className="section-label">MAP CONFIGURATION</div><label className="field-label">Map Body Workflow</label><select value={String(node.config.body_workflow_id ?? "")} onChange={(event) => onFlowConfigChange("body_workflow_id", event.target.value)}><option value="">选择 Body Workflow…</option>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.nodes.length} 节点</option>)}</select>{!node.config.body_workflow_id && <button className="official-workflow-button" onClick={() => void onCreateBodyWorkflow()}><Feather size={14} />创建空白 Map Body</button>}<label className="field-label">并发数</label><input type="number" min="1" max="8" value={Number(node.config.concurrency ?? 1)} onChange={(event) => onFlowConfigChange("concurrency", Number(event.target.value))} /></section>}
         {node.type === "workflow.input" && <section><div className="section-label">WORKFLOW INPUT</div><label className="field-label">暴露名称</label><input value={String(node.config.name ?? "input")} onChange={(event) => onFlowConfigChange("name", event.target.value)} /><label className="field-label">默认值</label><textarea value={String(node.config.default ?? "")} onChange={(event) => onFlowConfigChange("default", event.target.value)} /><p className="section-help">这个名称会显示在父 Workflow 组件的输入端口上。</p></section>}
          {node.type === "workflow.output" && <section><div className="section-label">WORKFLOW OUTPUT</div><label className="field-label">暴露名称</label><input value={String(node.config.name ?? "output")} onChange={(event) => onFlowConfigChange("name", event.target.value)} /><p className="section-help">这个名称会显示在父 Workflow 组件的输出端口上。</p></section>}
          {node.type === "flow.map" && mapSummary && <section><div className="section-label">MAP SUMMARY</div><div className="map-summary-facts"><div><b>{mapSummary.succeeded_items}/{mapSummary.total_items}</b><span>完成条目</span></div><div><b>{mapSummary.failed_items}</b><span>失败条目</span></div><div><b>{mapSummary.model_calls}</b><span>模型调用</span></div><div><b>{mapSummary.total_tokens}</b><span>Tokens</span></div><div><b>{Math.round(mapSummary.duration_ms / 1000)}s</b><span>总耗时</span></div></div></section>}

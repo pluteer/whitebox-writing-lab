@@ -196,6 +196,7 @@ class MapItemRetryRequest(BaseModel):
 
 class MapItemSummary(BaseModel):
     item_id: str
+    failed_node_run_id: str | None = None
     status: str
     completed: int
     total: int

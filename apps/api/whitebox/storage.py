@@ -50,10 +50,11 @@ class Storage:
         self._lock = threading.RLock()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=10)
+        connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 10000")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     def initialize(self) -> None:
@@ -282,6 +283,7 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_provider_calls_attempt ON provider_calls(attempt_id);
                 """
             )
+            db.execute("PRAGMA journal_mode = WAL")
             try:
                 db.execute("ALTER TABLE node_runs ADD COLUMN input_snapshot TEXT")
             except sqlite3.OperationalError:

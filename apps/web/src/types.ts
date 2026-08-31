@@ -167,7 +167,7 @@ export interface MapRunSummary {
   duration_ms: number;
   model_calls: number;
   total_tokens: number;
-  items: Array<{ item_id: string; status: string; completed: number; total: number; attempts: number; duration_ms: number; model_calls: number; total_tokens: number; output_artifact_id: string | null; error: string | null }>;
+  items: Array<{ item_id: string; failed_node_run_id?: string | null; status: string; completed: number; total: number; attempts: number; duration_ms: number; model_calls: number; total_tokens: number; output_artifact_id: string | null; error: string | null }>;
 }
 
 export interface Run {

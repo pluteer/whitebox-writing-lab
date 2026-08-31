@@ -59,6 +59,7 @@ from .models import (
     WorkflowTemplateImportPreview,
     SubflowCreate,
     ProductionCanvas,
+    Position,
     ProductionStage,
     ProductionStageUpdate,
     ProductionStageCreate,
@@ -314,14 +315,14 @@ DEFAULT_SECRETS_PATH = Path(__file__).resolve().parents[3] / "data" / "provider-
 
 def default_production_canvas(project_id: str) -> ProductionCanvas:
     stages = [
-        ("setup", "book_setup", "新书立项", "题材、卖点、语言和创作目标", 80, 120),
-        ("world", "world_building", "世界观构建", "规则、社会、历史、文化和冲突", 430, 120),
-        ("characters", "character_design", "角色设计", "角色骨架、信念、关系和声纹", 780, 120),
-        ("story", "story_planning", "故事规划", "主线、阶段目标、冲突与风格", 1130, 120),
-        ("outline", "outline_planning", "卷纲与近期大纲", "卷级规划与接下来章节安排", 1130, 430),
-        ("chapter", "chapter_production", "章节生产", "写作、审查、裁决、修订和审批", 780, 430),
-        ("post", "post_chapter_update", "章后状态回写", "人物、时间线、伏笔和叙事债务", 430, 430),
-        ("analysis", "book_analysis", "拆书分析", "导入整本小说，提取结构、角色、节奏和可复用技法", 80, 760),
+        ("setup", "book_setup", "新书立项", "题材、卖点、语言和创作目标", 60, 180),
+        ("world", "world_building", "世界观构建", "规则、社会、历史、文化和冲突", 430, 180),
+        ("characters", "character_design", "角色设计", "角色骨架、信念、关系和声纹", 800, 180),
+        ("story", "story_planning", "故事规划", "主线、阶段目标、冲突与风格", 1170, 180),
+        ("outline", "outline_planning", "卷纲与近期大纲", "卷级规划与接下来章节安排", 1540, 180),
+        ("chapter", "chapter_production", "章节生产", "写作、审查、裁决、修订和审批", 1910, 180),
+        ("post", "post_chapter_update", "章后状态回写", "人物、时间线、伏笔和叙事债务", 2280, 180),
+        ("analysis", "book_analysis", "拆书分析", "导入整本小说，提取结构、角色、节奏和可复用技法", 2650, 180),
     ]
     return ProductionCanvas.model_validate({
         "project_id": project_id, "revision": 1,
@@ -342,6 +343,24 @@ def default_production_canvas(project_id: str) -> ProductionCanvas:
             {"id": "chapter-post", "source": "chapter", "target": "post"},
         ],
     })
+
+
+def normalize_production_layout(canvas: ProductionCanvas) -> ProductionCanvas:
+    """Migrate the original two-row default layout to a left-to-right flow."""
+    if len(canvas.stages) < 2 or not canvas.stages:
+        return canvas
+    ys = [stage.position.y for stage in canvas.stages]
+    if max(ys) - min(ys) < 120:
+        return canvas
+    ordered_ids = ["setup", "world", "characters", "story", "outline", "chapter", "post", "analysis"]
+    by_id = {stage.id: stage for stage in canvas.stages}
+    if not all(stage_id in by_id for stage_id in ordered_ids if stage_id != "analysis"):
+        return canvas
+    positions = {stage_id: {"x": 60 + index * 370, "y": 180} for index, stage_id in enumerate(ordered_ids)}
+    updated = canvas.model_copy(deep=True)
+    updated.stages = [stage.model_copy(update={"position": Position.model_validate(positions[stage.id])}) if stage.id in positions else stage for stage in updated.stages]
+    updated.revision += 1
+    return updated
 
 
 def create_app(
@@ -770,11 +789,15 @@ def create_app(
         canvas = storage.get_production_canvas(project_id)
         if not canvas:
             canvas = storage.save_production_canvas(default_production_canvas(project_id))
-        elif not any(stage.id == "analysis" for stage in canvas.stages):
+        else:
+            normalized = normalize_production_layout(canvas)
+            if normalized.revision != canvas.revision:
+                canvas = storage.save_production_canvas(normalized)
+        if not any(stage.id == "analysis" for stage in canvas.stages):
             canvas.stages.append(ProductionStage(
                 id="analysis", type="book_analysis", title="拆书分析",
                 description="导入整本小说，提取结构、角色、节奏和可复用技法",
-                position={"x": 80, "y": 760}, workflow_id=None,
+                position={"x": 2650, "y": 180}, workflow_id=None,
             ))
             canvas.revision += 1
             canvas = storage.save_production_canvas(canvas)
@@ -1972,7 +1995,7 @@ def create_app(
             failed = next((row for row in rows if row.status == "failed"), None)
             completed = sum(row.status in {"succeeded", "cached"} for row in rows)
             status = "failed" if failed else "succeeded" if rows and completed == len(rows) else "running"
-            items.append({"item_id": item_id, "status": status, "completed": completed, "total": len(rows), "attempts": len(attempts), "duration_ms": round(max(durations, default=0) * 1000), "model_calls": len(calls), "total_tokens": sum(call.usage.total_tokens if call.usage else 0 for call in calls), "output_artifact_id": next((row.output_artifact_id for row in reversed(rows) if row.output_artifact_id), None), "error": failed.error if failed else None})
+            items.append({"item_id": item_id, "failed_node_run_id": failed.id if failed else None, "status": status, "completed": completed, "total": len(rows), "attempts": len(attempts), "duration_ms": round(max(durations, default=0) * 1000), "model_calls": len(calls), "total_tokens": sum(call.usage.total_tokens if call.usage else 0 for call in calls), "output_artifact_id": next((row.output_artifact_id for row in reversed(rows) if row.output_artifact_id), None), "error": failed.error if failed else None})
         return {"node_run_id": node_run_id, "total_items": len(items), "succeeded_items": sum(item["status"] == "succeeded" for item in items), "failed_items": sum(item["status"] == "failed" for item in items), "running_items": sum(item["status"] == "running" for item in items), "duration_ms": sum(item["duration_ms"] for item in items), "model_calls": sum(item["model_calls"] for item in items), "total_tokens": sum(item["total_tokens"] for item in items), "items": items}
 
     @app.post("/api/node-runs/{node_run_id}/retry", status_code=202)

@@ -1,4 +1,14 @@
 const MAX_REFERENCE_BYTES = 10 * 1024 * 1024;
+export const DEFAULT_CHUNK_SIZE = 12000;
+export const MIN_CHUNK_SIZE = 1000;
+export const MAX_CHUNK_SIZE = 100000;
+
+export function normalizeReferenceOptions(chunkSize: number, temperature: number): { chunkSize: number; temperature: number } {
+  return {
+    chunkSize: Math.min(MAX_CHUNK_SIZE, Math.max(MIN_CHUNK_SIZE, Math.round(Number.isFinite(chunkSize) ? chunkSize : DEFAULT_CHUNK_SIZE))),
+    temperature: Math.min(2, Math.max(0, Number.isFinite(temperature) ? temperature : 0.2)),
+  };
+}
 
 export function validateReferenceFile(file: Pick<File, "name" | "size">): string | null {
   if (!/\.(txt|md|markdown)$/i.test(file.name)) return "拆书只支持 TXT、MD 或 Markdown 文件。";

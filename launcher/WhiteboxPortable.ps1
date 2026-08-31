@@ -17,8 +17,8 @@ function Test-Api { try { return (Invoke-WebRequest -UseBasicParsing -Uri "$ApiU
 
 if ($Stop) {
     if (Test-Path $PidFile) {
-        $pid = (Get-Content -Raw $PidFile).Trim()
-        if ($pid) { Stop-Process -Id ([int]$pid) -Force -ErrorAction SilentlyContinue }
+        $processId = (Get-Content -Raw $PidFile).Trim()
+        if ($processId) { Stop-Process -Id ([int]$processId) -Force -ErrorAction SilentlyContinue }
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
     }
     exit 0

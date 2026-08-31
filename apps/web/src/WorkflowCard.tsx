@@ -37,13 +37,12 @@ export function WorkflowCard({ data, selected, type }: NodeProps) {
   const Icon = isSource ? FileInput : isReview ? FileCheck2 : isArbiter ? Gavel : isDiff ? GitCompare : isQuality ? ShieldCheck : isApproval ? UserCheck : isArchive || isState ? Archive : isRevision || isModel ? BrainCircuit : PenLine;
 
   return (
-    <div className={`workflow-card ${selected ? "is-selected" : ""} status-${card.status ?? "idle"}`}>
-      <div className="card-index">{isSource ? "01" : isModel ? "02" : isReview ? "03" : isArbiter ? "04" : isRevision ? "05" : isDiff ? "06" : isQuality ? "07" : isApproval ? "08" : isArchive ? "09" : isState ? "10" : "--"}</div>
+    <div className={`workflow-card comfy-node ${selected ? "is-selected" : ""} status-${card.status ?? "idle"}`}>
+      <div className="comfy-node-title"><span className="card-icon"><Icon size={14} strokeWidth={1.7} /></span><strong>{card.label}</strong><small>{statusLabels[card.status ?? ""] ?? "READY"}</small></div>
       <div className="card-heading">
-        <span className="card-icon"><Icon size={16} strokeWidth={1.7} /></span>
         <div>
           <small>{isSource ? "INPUT / MOCK" : isReview ? "REVIEWER / LLM" : isArbiter ? "ARBITER / LLM" : isRevision ? "REVISION / LLM" : isDiff ? "DIFF / SCRIPT" : isQuality ? "GATE / SCRIPT" : isApproval ? "HUMAN / APPROVAL" : isArchive ? "ARCHIVE / SCRIPT" : isState ? "STATE / PROPOSAL" : isAgent ? "AGENT / AGENT" : isPrompt ? "PROMPT / LLM" : isWorkflowBoundary ? "WORKFLOW / BOUNDARY" : isFlow ? "FLOW / CONTROL" : isModel ? "WRITER / LLM" : "TRANSFORM / SCRIPT"}</small>
-          <strong>{card.label}</strong>
+           <strong>{isAgent ? "受限工具 Agent" : isPrompt ? "一次 Prompt 调用" : ""}</strong>
         </div>
       </div>
       <p>{card.detail}</p>
