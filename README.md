@@ -160,10 +160,10 @@ installer\构建安装包.bat
 如果只是分享给朋友，推荐使用便携包构建脚本。便携模式使用独立的 `data/` 和 `logs/`，不会读取开发目录的数据：
 
 ```powershell
-.\installer\构建便携包.ps1 -Version 0.3.0
+.\installer\构建便携包.ps1 -Version 0.3.1
 ```
 
-将 `packaging\whitebox-writing-portable-0.3.0.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
+将 `packaging\whitebox-writing-portable-0.3.1.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
 
 ## Project Status
 
