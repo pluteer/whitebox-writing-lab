@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check version consistency
-         run: python ../../tools/check_version.py
+        run: python ../../tools/check_version.py
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
