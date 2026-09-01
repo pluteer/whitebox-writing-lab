@@ -89,7 +89,7 @@ jobs:
       - name: Install pinned Sigstore verifier
         run: |
           python -m venv .sigstore-venv
-          .sigstore-venv/bin/python -m pip install --disable-pip-version-check 'sigstore==3.6.4'
+          .sigstore-venv/bin/python -m pip install --disable-pip-version-check 'sigstore==4.5.0'
           echo "$PWD/.sigstore-venv/bin" >> "$GITHUB_PATH"
       - name: Generate SHA256 checksums
         run: (cd release-artifacts && sha256sum * > SHA256SUMS)

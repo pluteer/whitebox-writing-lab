@@ -19,7 +19,7 @@ $ApiUrl = "http://127.0.0.1:8001"
 $WebUrl = "http://127.0.0.1:5173"
 $StaticWebDist = Join-Path $ProjectRoot "apps\web\dist"
 $UseStaticWeb = Test-Path (Join-Path $StaticWebDist "index.html")
-$LauncherVersion = "0.4.4"
+$LauncherVersion = "0.4.5"
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $WslTempDir | Out-Null
