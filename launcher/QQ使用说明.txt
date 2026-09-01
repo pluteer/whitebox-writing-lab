@@ -1,0 +1,18 @@
+Whitebox Writing Lab 0.4.3 QQ 分享版
+
+好友拿到后：
+1. 解压 ZIP（不要直接在压缩包里运行）。
+2. 双击 StartWhiteboxPortable.bat。
+3. 浏览器会自动打开 Whitebox。
+4. 第一次使用时，在“全局设置”里填写自己的模型 API Key（例如 DeepSeek Key）。
+
+无需安装 Python、Node.js、npm、WSL 或 PowerShell 7，也不需要管理员权限。
+
+注意：
+- 不要把压缩包解压到只读目录，建议解压到桌面或文档目录。
+- data 文件夹保存项目和模型密钥，不要把使用后的整个目录再转发给别人。
+- 程序只监听本机 127.0.0.1:8001，不会开放到局域网。
+- 关闭浏览器不会丢数据；需要完全停止后台服务时，双击 StopWhitebox.bat。
+- Windows 若首次提示“已保护你的电脑”，请核对文件来源和 SHA256 后，点“更多信息”再选择运行。
+
+官方仓库：https://github.com/pluteer/whitebox-writing-lab

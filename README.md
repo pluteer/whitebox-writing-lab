@@ -172,7 +172,7 @@ installer\构建安装包.bat
 .\installer\BuildPortable.ps1 -Version 0.4.3
 ```
 
-将 `packaging\whitebox-writing-portable-0.4.3.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
+将 `packaging\whitebox-writing-portable-0.4.3.zip` 发送给朋友。对方在全新 Windows 10/11 电脑解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI，无需安装 Python、Node.js、WSL 或 PowerShell 7。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
 
 GitHub Release 中的 ZIP、EXE 和 `SHA256SUMS` 使用 Sigstore keyless signing。下载后应同时取得同名 `.sigstore.json`，验证方法见 [`docs/SIGSTORE.md`](docs/SIGSTORE.md)。Sigstore 是可审计的供应链签名，不是 Windows Authenticode，因此系统属性页不一定显示传统代码签名发布者。
 

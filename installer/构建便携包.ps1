@@ -29,16 +29,19 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
     if (Test-Path "$Packaging\runtime\api") { Remove-Item -Recurse -Force "$Packaging\runtime\api" }
     Rename-Item "$Packaging\runtime\whitebox-api" api
+    & $Python -m PyInstaller --noconfirm --clean --onefile --windowed --name Whitebox --distpath $Packaging --workpath "$Packaging\launcher-build" --specpath "$Packaging\launcher-spec" "$Root\launcher\portable_launcher.py"
+    if ($LASTEXITCODE -ne 0) { throw "Portable launcher build failed." }
     New-Item -ItemType Directory -Force "$Packaging\runtime\web" | Out-Null
     Copy-Item -Recurse -Force "$Root\apps\web\dist\*" "$Packaging\runtime\web"
-    Copy-Item -Force "$Root\launcher\WhiteboxPortable.ps1", "$Root\launcher\StartWhiteboxPortable.bat", "$Root\README.md", "$Root\version.json", "$Root\LICENSE" $Packaging
+    Copy-Item -Force "$Root\launcher\StartWhiteboxPortable.bat", "$Root\launcher\StopWhitebox.bat", "$Root\README.md", "$Root\version.json", "$Root\LICENSE" $Packaging
+    Copy-Item -Force "$Root\launcher\QQ使用说明.txt" "$Packaging\使用说明.txt"
     if (-not $SkipInstaller) {
         & $Iscc "$Root\installer\Whitebox.iss"
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
     }
     $zip = "$Packaging\whitebox-writing-portable-$Version.zip"
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
-    & "$env:SystemRoot\System32\tar.exe" -a -c -f $zip -C $Packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md version.json LICENSE
+    & "$env:SystemRoot\System32\tar.exe" -a -c -f $zip -C $Packaging runtime data logs Whitebox.exe StartWhiteboxPortable.bat StopWhitebox.bat 使用说明.txt README.md version.json LICENSE
     if ($LASTEXITCODE -ne 0) { throw "Portable archive creation failed." }
     $hash = (certutil.exe -hashfile $zip SHA256 | Select-Object -Skip 1 | Select-Object -First 1).Trim()
     Write-Output ("SHA256  " + $hash)

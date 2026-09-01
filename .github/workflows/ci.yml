@@ -70,6 +70,7 @@ jobs:
           $required = @(
             '.\packaging\runtime\api\whitebox-api.exe',
             '.\packaging\runtime\web\index.html',
+            '.\packaging\Whitebox.exe',
             '.\packaging\version.json',
             '.\packaging\LICENSE',
             ".\packaging\whitebox-writing-portable-$version.zip",
@@ -77,23 +78,32 @@ jobs:
           )
           foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing artifact: $path" } }
           $list = tar.exe -tf ".\packaging\whitebox-writing-portable-$version.zip"
-          foreach ($entry in @('runtime/api/whitebox-api.exe', 'runtime/web/index.html', 'version.json', 'LICENSE')) {
+          foreach ($entry in @('runtime/api/whitebox-api.exe', 'runtime/web/index.html', 'Whitebox.exe', 'StartWhiteboxPortable.bat', 'StopWhitebox.bat', '使用说明.txt', 'version.json', 'LICENSE')) {
             if ($list -notcontains $entry) { throw "Portable archive is missing $entry" }
           }
-          $scripts = @('launcher/WhiteboxPortable.ps1', 'launcher/WhiteboxLauncher.ps1', 'installer/BuildPortable.ps1', 'installer/构建便携包.ps1')
+          $scripts = @('launcher/WhiteboxLauncher.ps1', 'installer/BuildPortable.ps1', 'installer/构建便携包.ps1')
           foreach ($script in $scripts) {
             $errors = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$null, [ref]$errors)
             if ($errors.Count) { throw "PowerShell parse failure in ${script}: $($errors -join '; ')" }
           }
           $portable = Resolve-Path .\packaging
+          $env:WHITEBOX_API_PORT = '18001'
           try {
-            pwsh -NoProfile -File "$portable\WhiteboxPortable.ps1" -NoBrowser
-            $state = Get-Content -Raw "$portable\runtime\api.pid" | ConvertFrom-Json
-            $runtime = Invoke-RestMethod http://127.0.0.1:8001/api/runtime-info -Headers @{ 'X-Whitebox-Instance-Token' = $state.instanceToken } -TimeoutSec 5
+            Start-Process -FilePath "$portable\Whitebox.exe" -ArgumentList '--no-browser'
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            while (-not (Test-Path "$portable\runtime\api.pid.json") -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+            if (-not (Test-Path "$portable\runtime\api.pid.json")) { throw 'Native portable launcher did not create PID state' }
+            $state = Get-Content -Raw "$portable\runtime\api.pid.json" | ConvertFrom-Json
+            $runtime = $null
+            while (-not $runtime -and [DateTime]::UtcNow -lt $deadline) {
+              try { $runtime = Invoke-RestMethod http://127.0.0.1:18001/api/runtime-info -Headers @{ 'X-Whitebox-Instance-Token' = $state.instance_token } -TimeoutSec 2 }
+              catch { Start-Sleep -Milliseconds 250 }
+            }
+            if (-not $runtime) { throw 'Native portable API did not become ready' }
             if ($runtime.instance_token_valid -ne $true) { throw 'Portable API rejected PID state token' }
           } finally {
-            pwsh -NoProfile -File "$portable\WhiteboxPortable.ps1" -Stop
+            Start-Process -FilePath "$portable\Whitebox.exe" -ArgumentList '--stop' -Wait
           }
           $installDir = Join-Path $env:RUNNER_TEMP 'Whitebox Writing Smoke'
           $setup = Resolve-Path ".\installer\Output\Whitebox-Writing-$version-Setup.exe"
