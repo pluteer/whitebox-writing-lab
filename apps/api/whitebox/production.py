@@ -66,7 +66,7 @@ def compose_production_canvas(
         if not source:
             raise ValueError(f"组件连线 {edge.id} 的输出端口无法映射")
         if not target:
-            continue
+            raise ValueError(f"组件连线 {edge.id} 的输入端口无法映射")
         source_id, source_port = source
         edges.append({
             "id": f"production/{edge.id}", "source": source_id, "target": target,

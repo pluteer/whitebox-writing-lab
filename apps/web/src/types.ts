@@ -178,6 +178,14 @@ export interface Run {
   created_at: string;
   completed_at: string | null;
   node_runs: NodeRun[];
+  snapshot?: {
+    run_context?: {
+      project_id?: string;
+      project_title?: string;
+      chapter_number?: number;
+    };
+  };
+  actual_usage?: { model_calls: number; total_tokens: number };
 }
 
 export interface Artifact {

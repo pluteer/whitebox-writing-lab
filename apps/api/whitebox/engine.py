@@ -465,7 +465,9 @@ class WorkflowEngine:
             None,
         )
         if draft_parent:
-            revision.validate_against(draft_parent.content["text"], decisions)
+            revision.evidence_warnings = revision.validate_against(
+                draft_parent.content["text"], decisions
+            )
         decision_map = {item.finding_id: item for item in decisions.decisions}
         changed_ids = {item.finding_id for item in revision.changes}
         unresolved = [
@@ -477,12 +479,18 @@ class WorkflowEngine:
         checks = [
             {"id": "decision_coverage", "passed": len(decisions.decisions) == len(review.findings)},
             {"id": "revision_attribution", "passed": not unresolved},
+            {"id": "revision_evidence", "passed": not revision.evidence_warnings},
             {"id": "nonempty_revision", "passed": bool(revision.text.strip())},
         ]
+        warned_ids = {
+            warning.split()[1] for warning in revision.evidence_warnings
+            if len(warning.split()) > 1
+        }
+        unresolved = sorted(set(unresolved) | warned_ids)
         report = QualityReport(
             passed=all(item["passed"] for item in checks), checks=checks,
             unresolved_critical_findings=unresolved,
-            summary="裁决与修订闭环通过" if not unresolved else "仍有严重意见未完成修订",
+            summary="裁决与修订闭环通过" if not unresolved else "修订证据需要人工复核",
         )
         return report.model_dump(mode="json"), "writing.QualityReport@1"
 
@@ -495,6 +503,14 @@ class WorkflowEngine:
             raise RuntimeError("归档节点需要 Revision 与 Approval 输入")
         if approval_artifact.content.get("status") != "approved":
             raise RuntimeError("只有人工批准后才能归档")
+        approved_revision_ids = approval_artifact.content.get("artifact_ids", [])
+        approved_revisions = [
+            artifact for artifact_id in approved_revision_ids
+            if (artifact := self.storage.get_artifact(artifact_id))
+            and artifact.schema_type == "writing.Revision@1"
+        ]
+        if approved_revisions:
+            revision_artifact = approved_revisions[-1]
         if node.type == "writing.state_proposal":
             content = {
                 "status": "proposed",
@@ -590,9 +606,9 @@ class WorkflowEngine:
             if instruction_override:
                 instruction = str(instruction_override["content"])
         if node.type in {"writing.deepseek_draft", "writing.llm_draft"}:
-            parent = by_type.get("writing.Draft@1")
+            parent = by_type.get("writing.Draft@1") or by_type.get("core.Text@1")
             if not parent:
-                raise RuntimeError("起草节点需要 Draft 输入")
+                raise RuntimeError("起草节点需要章节任务文本输入")
             system_prompt = str(node.config.get(
                 "system_prompt",
                 "你是网络小说写手。严格遵守章节任务，直接输出正文，不解释创作过程。",
@@ -637,6 +653,11 @@ class WorkflowEngine:
                 "\"changes\":[{\"finding_id\":\"F1\",\"description\":\"改了什么\","
                 "\"before_quote\":\"旧稿逐字引文\",\"after_quote\":\"新稿逐字引文\"}],"
                 "\"summary\":\"修订总结\"}。每条 accept/modify 必须且只能有一个 change。"
+                "完成正文后再填写引文：before_quote 必须是旧稿中实际存在的短连续片段，"
+                "after_quote 必须是最终 text 中实际存在的短连续片段。多个 finding 修改同一段时，"
+                "不要填写合并前的理想整段，各自选择最终 text 中能证明该项修改的短片段。"
+                "输出前逐项自检：先在 text 中实际执行每条裁决，再从完成后的 text 原样复制"
+                "after_quote；禁止只在 summary 或 changes 中声称已修改。"
             )
             user_content = (
                 f"旧稿：\n{draft.content['text']}\n\n裁决：\n"
@@ -719,7 +740,10 @@ class WorkflowEngine:
             "model": model,
             "messages": messages,
             "temperature": float(node.config.get("temperature", 0.8)),
-            "max_tokens": int(node.config.get("max_tokens", 1200)),
+            "max_tokens": max(
+                int(node.config.get("max_tokens", 1200)),
+                4000 if node.type in {"writing.llm_review", "writing.llm_arbiter", "writing.llm_revision"} else 0,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
@@ -820,6 +844,10 @@ class WorkflowEngine:
                 "provider": connection["provider_identity"],
                 "model": result.model,
             }, "ai.PromptResult@1" if node.type == "ai.prompt_call" else "writing.Draft@1", skill_artifact_ids)
+        if result.finish_reason == "length":
+            raise ValueError(
+                f"模型结构化输出被 max_tokens={request_payload['max_tokens']} 截断"
+            )
         parsed = self._extract_json_object(result.text)
         if node.type == "writing.llm_review":
             review = ReviewSet.model_validate(parsed)
@@ -829,9 +857,18 @@ class WorkflowEngine:
             review = ReviewSet.model_validate(by_type["writing.ReviewSet@1"].content)
             decisions.validate_references(review)
             return decisions.model_dump(mode="json"), "writing.DecisionSet@1", skill_artifact_ids
+        for change in parsed.get("changes", []):
+            if "description" not in change:
+                change["description"] = str(
+                    change.get("revision_instruction") or change.get("reason") or "模型未提供修订说明"
+                )
+            change.setdefault("before_quote", f"[模型未提供 {change.get('finding_id', 'unknown')} 原文引文]")
+            change.setdefault("after_quote", f"[模型未提供 {change.get('finding_id', 'unknown')} 新文引文]")
         revision = Revision.model_validate(parsed)
         decisions = DecisionSet.model_validate(by_type["writing.DecisionSet@1"].content)
-        revision.validate_against(by_type["writing.Draft@1"].content["text"], decisions)
+        revision.evidence_warnings = revision.validate_against(
+            by_type["writing.Draft@1"].content["text"], decisions
+        )
         return revision.model_dump(mode="json"), "writing.Revision@1", skill_artifact_ids
 
     @staticmethod
@@ -1063,10 +1100,16 @@ class WorkflowEngine:
             "config": node.config,
             "parent_hashes": parent_hashes,
         }
+        run = self.storage.get_run(run_id)
+        context = run.snapshot.run_context if run else {}
+        payload["run_context"] = {
+            "project_id": context.get("project_id"),
+            "project_slug": context.get("project_slug"),
+            "chapter_number": context.get("chapter_number"),
+            "production_canvas_revision": context.get("production_canvas_revision"),
+        }
         if is_model_node_type(node.type):
             payload["provider_endpoint"] = node.config["connection_snapshot"]["base_url"]
-            run = self.storage.get_run(run_id)
-            context = run.snapshot.run_context if run else {}
             project_id = str(context.get("project_id", ""))
             prompt_ids = {
                 str(node.config.get("prompt_id", "")),

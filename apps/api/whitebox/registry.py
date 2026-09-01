@@ -40,7 +40,7 @@ NODE_DEFINITIONS = {
         title="DeepSeek 起草",
         description="使用 DeepSeek 官方 API 根据章节任务生成草稿。",
         category="writing",
-        inputs={"brief": PortDefinition(type="writing.Draft@1")},
+        inputs={"brief": PortDefinition(type="writing.Draft@1", accepts=["writing.Draft@1", "core.Text@1"])},
         outputs={"draft": PortDefinition(type="writing.Draft@1")},
         config_schema={
             "type": "object",
@@ -61,7 +61,7 @@ NODE_DEFINITIONS = {
         title="LLM 起草",
         description="使用全局模型预设和供应商连接生成草稿。",
         category="writing",
-        inputs={"brief": PortDefinition(type="writing.Draft@1")},
+        inputs={"brief": PortDefinition(type="writing.Draft@1", accepts=["writing.Draft@1", "core.Text@1"])},
         outputs={"draft": PortDefinition(type="writing.Draft@1")},
         config_schema={
             "type": "object",

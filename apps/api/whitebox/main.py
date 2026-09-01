@@ -11,6 +11,7 @@ import secrets
 import difflib
 import copy
 import sqlite3
+import shutil
 import yaml
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -26,6 +27,7 @@ from .compiler import compile_workflow
 from .engine import EventBroker, WorkflowEngine
 from .version import get_version
 from .models import (
+    Artifact,
     CreateRunRequest,
     DeepSeekConfigUpdate,
     ApprovalDecisionRequest,
@@ -120,9 +122,9 @@ DEFAULT_WORKFLOW = WorkflowDocument.model_validate(
         "nodes": [
             {
                 "id": "brief",
-                "type": "mock.source",
+                "type": "workflow.input",
                 "position": {"x": 80, "y": 170},
-                "config": {"text": "雨夜，失忆的剑客在旧戏楼醒来。"},
+                "config": {"name": "input", "default": "雨夜，失忆的剑客在旧戏楼醒来。"},
             },
             {
                 "id": "draft",
@@ -386,6 +388,23 @@ def resolve_stage_workflow(storage: Storage, stage: ProductionStage) -> Workflow
         version = storage.get_workflow_version(stage.workflow_id, stage.workflow_revision)
         return version.document if version else None
     return storage.get_workflow(stage.workflow_id)
+
+
+def project_author_brief(project_root: Path, project: Project) -> str:
+    path = project_root / project.slug / "outline" / "author_intent.md"
+    return path.read_text(encoding="utf-8")[:20000] if path.is_file() else ""
+
+
+def inject_project_brief(workflow: WorkflowDocument, brief: str) -> WorkflowDocument:
+    if not brief.strip():
+        return workflow
+    updated = workflow.model_copy(deep=True)
+    for node in updated.nodes:
+        if node.type == "mock.source" and node.id in {"brief", "input"}:
+            node.config["text"] = brief
+        elif node.type == "workflow.input" and node.id in {"brief", "input"}:
+            node.config["default"] = brief
+    return updated
 
 DEFAULT_DATABASE_PATH = Path(__file__).resolve().parents[3] / "data" / "whitebox.db"
 DEFAULT_SECRETS_PATH = Path(__file__).resolve().parents[3] / "data" / "provider-secrets.json"
@@ -958,6 +977,17 @@ def create_app(
                 None, "local-user", "创建项目时保存创作简报",
             )
         return created
+
+    @app.delete("/api/projects/{project_id}", status_code=204)
+    def delete_project(project_id: str):
+        if project_id == "demo-project":
+            raise HTTPException(403, "示例项目不能删除")
+        project = storage.get_project(project_id)
+        if not project:
+            raise HTTPException(404, "项目不存在")
+        if not storage.delete_project(project_id):
+            raise HTTPException(404, "项目不存在")
+        shutil.rmtree(projects_root / project.slug, ignore_errors=True)
 
     @app.get("/api/projects/{project_id}/production-canvas")
     def get_production_canvas(project_id: str):
@@ -1774,6 +1804,56 @@ def create_app(
 
     @app.post("/api/approvals/{approval_id}/decide")
     async def decide_approval(approval_id: str, request: ApprovalDecisionRequest):
+        pending = storage.get_approval(approval_id)
+        if not pending or pending.status != "pending":
+            raise HTTPException(409, "审批不存在或已经处理")
+        if request.decision == "rejected" and not request.note.strip():
+            raise HTTPException(422, "驳回时必须填写批示，说明需要修改的内容")
+        if request.decision == "approved" and request.edited_content is not None:
+            revisions = [
+                artifact for artifact_id in pending.artifact_ids
+                if (artifact := storage.get_artifact(artifact_id))
+                and artifact.schema_type == "writing.Revision@1"
+            ]
+            if revisions and request.edited_content != str(revisions[-1].content.get("text", "")):
+                source = revisions[-1]
+                content = {"text": request.edited_content, "operation": "human_edit", "summary": request.note.strip() or "作者修改终稿，等待重新审查"}
+                encoded = json.dumps(content, ensure_ascii=False, sort_keys=True).encode()
+                edited = Artifact(
+                    id=str(uuid4()), run_id=pending.run_id,
+                    node_run_id=pending.node_run_id, schema_type="writing.Draft@1", content=content,
+                    content_hash=hashlib.sha256(encoded).hexdigest(),
+                    parent_artifact_ids=[source.id], created_at=datetime.now(UTC),
+                )
+                storage.save_artifact(edited)
+                run = storage.get_run(pending.run_id)
+                draft_row = next((row for row in run.node_runs if row.node_type == "writing.llm_draft"), None) if run else None
+                reviewer_row = next((row for row in run.node_runs if row.node_type == "writing.llm_review"), None) if run else None
+                if not draft_row or not reviewer_row:
+                    raise HTTPException(422, "当前运行缺少可重新审查的写作节点")
+                edited.node_run_id = draft_row.id
+                with storage._lock, storage._connect() as db:
+                    db.execute("UPDATE artifacts SET node_run_id=? WHERE id=?", (draft_row.id, edited.id))
+                storage.replace_node_output(draft_row.id, edited.id)
+                storage.delete_approval(approval_id)
+                storage.append_run_node_instruction(pending.run_id, reviewer_row.node_id, request.note.strip() or "重新审查作者修改终稿")
+                await engine.retry(reviewer_row.id)
+                await engine.emit(pending.run_id, reviewer_row.id, "approval.edit.recheck_requested", {"sourceApprovalId": approval_id, "artifactId": edited.id, "note": request.note})
+                return {"status": "rechecking", "run_id": pending.run_id, "artifact_id": edited.id}
+        if request.decision == "rejected":
+            approval = storage.decide_approval(approval_id, request.decision, request.actor, request.note)
+            if not approval:
+                raise HTTPException(409, "审批不存在或已经处理")
+            run = storage.get_run(approval.run_id)
+            target_type = {"writer": "writing.llm_draft", "reviewer": "writing.llm_review", "reviser": "writing.llm_revision"}[request.rework_from]
+            target = next((row for row in run.node_runs if row.node_type == target_type), None) if run else None
+            if not target:
+                raise HTTPException(422, "当前运行缺少所选返工节点")
+            storage.delete_approval(approval_id)
+            storage.append_run_node_instruction(approval.run_id, target.node_id, request.note.strip())
+            await engine.emit(approval.run_id, target.id, "approval.rework_requested", {"sourceApprovalId": approval_id, "target": request.rework_from, "note": request.note})
+            await engine.retry(target.id)
+            return {"status": "reworking", "run_id": approval.run_id, "target": request.rework_from}
         approval = storage.decide_approval(
             approval_id, request.decision, request.actor, request.note
         )
@@ -2194,8 +2274,14 @@ def create_app(
 
     @app.post("/api/runs", status_code=202)
     async def create_run(request: CreateRunRequest) -> dict[str, str]:
+        project = storage.get_project(request.project_id)
+        if not project:
+            raise HTTPException(404, "项目不存在")
+        request_workflow = inject_project_brief(
+            request.workflow, project_author_brief(projects_root, project)
+        )
         result = compile_workflow(
-            request.workflow, request.target_node_ids, model_profiles=model_profile_map(),
+            request_workflow, request.target_node_ids, model_profiles=model_profile_map(),
             provider_connections=connection_map(), provider_models=provider_model_map(),
             skills=skill_map(), workflow_resolver=storage.get_workflow,
         )
@@ -2211,9 +2297,6 @@ def create_app(
                 "message": "本次流程包含文件写入等副作用，请明确允许",
                 "node_ids": side_effect_nodes,
             })
-        project = storage.get_project(request.project_id)
-        if not project:
-            raise HTTPException(404, "项目不存在")
         context = ChapterRunContext(
             project_id=project.id,
             project_title=project.title,
@@ -2237,7 +2320,7 @@ def create_app(
         ).hexdigest()
         if request.workflow.id != "starter" and not request.workflow.id.startswith("official-"):
             try:
-                storage.save_workflow_checked(request.workflow)
+                storage.save_workflow_checked(request_workflow)
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
         run_id = str(uuid4())
@@ -2273,6 +2356,11 @@ def create_app(
         }
         if any(workflow is None for workflow in workflows.values()):
             raise HTTPException(422, "生产组件引用的 Workflow 不存在")
+        brief = project_author_brief(projects_root, project)
+        workflows = {
+            stage_id: inject_project_brief(workflow, brief) if workflow else None
+            for stage_id, workflow in workflows.items()
+        }
         try:
             composed = compose_production_canvas(canvas, workflows, project.id, selected_ids)
         except ValueError as exc:

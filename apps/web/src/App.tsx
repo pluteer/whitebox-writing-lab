@@ -146,6 +146,7 @@ export default function App() {
   const [chapterNumber, setChapterNumber] = useState(1);
   const [showProjectCreator, setShowProjectCreator] = useState(false);
   const [showDirector, setShowDirector] = useState(false);
+  const [showWelcome, setShowWelcome] = useState(() => localStorage.getItem("whitebox.welcomeSeen") !== "1");
   const [directorIdea, setDirectorIdea] = useState("");
   const [directorCandidates, setDirectorCandidates] = useState<Array<Record<string, unknown>>>([]);
   const [selectedDirectorCandidate, setSelectedDirectorCandidate] = useState<Record<string, unknown> | null>(null);
@@ -253,10 +254,17 @@ export default function App() {
     });
   }, []);
 
-  useEffect(() => { if (projects.some((project) => project.id === projectId)) localStorage.setItem("whitebox.projectId", projectId); }, [projectId, projects]);
+  useEffect(() => {
+    if (!projects.length) return;
+    if (projects.some((project) => project.id === projectId)) localStorage.setItem("whitebox.projectId", projectId);
+    else setProjectId(projects[0].id);
+  }, [projectId, projects]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !projects.some((project) => project.id === projectId)) return;
+    switchRun(null);
+    setSelectedNodeId(null);
+    setSelectedStageId("setup");
     const requestId = ++projectRequest.current;
     Promise.all([api.getProductionCanvas(projectId), api.getProductionStatus(projectId), api.getReferenceBooks(projectId), api.getApprovals(projectId)])
       .then(([canvas, statuses, books, approvals]) => {
@@ -269,14 +277,14 @@ export default function App() {
           ? current : canvas.stages[0]?.id ?? null);
       })
       .catch((reason: Error) => { if (requestId === projectRequest.current) setError(readApiError(reason)); });
-  }, [projectId]);
+  }, [projectId, projects]);
 
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || !projects.some((project) => project.id === projectId)) return;
     let active = true;
     api.getRuns(projectId).then((items) => { if (active) setRunHistory(items); }).catch(() => { if (active) setRunHistory([]); });
     return () => { active = false; };
-  }, [projectId, run?.id, run?.status]);
+  }, [projectId, projects, run?.id, run?.status]);
 
   useEffect(() => {
     if (!productionCanvas || !workflows.length) {
@@ -787,6 +795,11 @@ export default function App() {
           return mergeRunEvents(runId, current, missedEvents);
         });
       } catch (reason) {
+        if (activeRunId.current === runId && String((reason as Error).message).includes("404")) {
+          switchRun(null);
+          setError("当前运行已不存在，已停止刷新。请从运行历史重新选择。 ");
+          return;
+        }
         setError((reason as Error).message);
       }
       // WebSocket delivers live events; this slower fallback only covers
@@ -1452,7 +1465,7 @@ export default function App() {
   }
 
   return (
-    <main className={`app-shell mode-${displayMode} level-${canvasLevel}`}>
+    <main className={`app-shell mode-${displayMode} level-${canvasLevel} ${currentApproval ? "has-approval" : ""} ${(showAssets || showRunHistory) ? "has-focus-panel" : ""}`}>
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><Braces size={22} /></div>
@@ -1473,11 +1486,12 @@ export default function App() {
           {canvasLevel === "workflow" && <><button className="history-button" aria-label="撤销" disabled={!historyPast.current.length} onClick={undoWorkflow}><Undo2 size={15} /></button>
           <button className="history-button" aria-label="重做" disabled={!historyFuture.current.length} onClick={redoWorkflow}><Redo2 size={15} /></button>
           <button className="ghost-button" disabled={!nodes.some((node) => node.selected && node.type !== "workflow.group") && !selectedNodeId} onClick={createGroupFromSelection}>成组</button></>}
-          <select className="project-select" aria-label="当前项目" value={projectId} onChange={(event) => {
+           <select className="project-select" aria-label="当前项目" value={projectId} onChange={(event) => {
             const selected = projects.find((item) => item.id === event.target.value);
             setProjectId(event.target.value);
             if (selected) setChapterNumber(selected.current_chapter);
-          }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select>
+           }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select>
+            {projectId !== "demo-project" && <button className="ghost-button project-delete-button" onClick={() => void (async () => { const current = projects.find((item) => item.id === projectId); if (!current || !window.confirm(`确认删除《${current.title}》及其全部运行、产物和本地文件？此操作不可撤销。`)) return; try { await api.deleteProject(projectId); const next = (await api.getProjects()); setProjects(next); setProjectId(next[0]?.id ?? "demo-project"); } catch (reason) { setError(readApiError(reason as Error)); } })()}><Trash2 size={14} />删除项目</button>}
            <label className="chapter-control">第 <input aria-label="章节号" type="number" min="1" value={chapterNumber} onChange={(event) => setChapterNumber(Math.max(1, Number(event.target.value)))} /> 章</label>
             <button className="ghost-button" onClick={() => setShowProjectCreator(true)}>新建项目</button>
             <button className="ghost-button" onClick={() => setShowDirector(true)}>自动导演开书</button>
@@ -1492,8 +1506,7 @@ export default function App() {
           </button>}
           {canvasLevel === "workflow" && <button className="ghost-button publish-button" onClick={() => void publishWorkflowVersion()} disabled={!workflow || busyActions.has("publish-workflow")}>{busyActions.has("publish-workflow") ? "发布中" : `发布版本 ${workflowVersions.length ? `v${workflowVersions.length + 1}` : ""}`}</button>}
            {canvasLevel === "workflow" && workflowVersions.length > 0 && <select aria-label="Workflow 版本操作" className="version-action-select" value="" onChange={async (event) => { const [action, raw] = event.target.value.split(":"); event.target.value = ""; const revision = Number(raw); if (!revision || !workflow) return; if (action === "restore") await restoreVersion(revision); else setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }}><option value="">版本操作…</option>{workflowVersions.map((version) => <><option key={`diff-${version.revision}`} value={`diff:${version.revision}`}>查看 v{version.revision} Diff</option><option key={`restore-${version.revision}`} value={`restore:${version.revision}`}>恢复为 v{version.revision}</option></>)}</select>}
-           {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理布局</button>}
-           {canvasLevel === "production" && selectedFrameIds.length > 1 && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理已选 {selectedFrameIds.length} 个 Frame</button>}
+            {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>{selectedFrameIds.length > 1 ? `整理已选 ${selectedFrameIds.length} 个 Frame` : "整理布局"}</button>}
            {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
            {projectApprovals.length > 0 && <button className="approval-action-button" onClick={() => void (async () => { const pending = projectApprovals[0]; const targetRun = await api.getRun(pending.run_id, projectId); switchRun(targetRun); setApproval(pending); setSelectedStageId(null); setSelectedNodeId(null); setShowRunHistory(false); setShowAssets(false); setShowModelCenter(false); setShowNodeLibrary(false); })()}><UserCheck size={15} />待审核 {projectApprovals.length}</button>}
           <button className="mobile-model-button" aria-label="打开模型中心" onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={16} /></button>
@@ -1501,17 +1514,17 @@ export default function App() {
             {connections.some((item) => item.has_api_key || item.is_local) ? <Play size={16} fill="currentColor" /> : <KeyRound size={16} />}
              {busyActions.has("start-run") ? "处理中" : run?.status === "running" ? "运行中" : run?.status === "waiting_approval" ? "等待审批" : connections.some((item) => item.has_api_key || item.is_local) ? canvasLevel === "production" ? "运行作品流程" : "运行工作流" : "全局设置"}
            </button>
-           {run && ["failed", "cancelled", "interrupted"].includes(run.status) && <button className="ghost-button" disabled={busyActions.has("resume-run")} onClick={() => void runAction("resume-run", async () => { await api.resumeRun(run.id); setRun(await api.getRun(run.id, projectId)); })}><RefreshCw size={14} />{busyActions.has("resume-run") ? "恢复中" : "恢复运行"}</button>}
+           {run && ["failed", "cancelled", "interrupted"].includes(run.status) && <button className="ghost-button" title="保留已成功节点，从第一个失败或中断节点继续" disabled={busyActions.has("resume-run")} onClick={() => void runAction("resume-run", async () => { await api.resumeRun(run.id); setRun(await api.getRun(run.id, projectId)); })}><RefreshCw size={14} />{busyActions.has("resume-run") ? "恢复中" : "从失败处继续"}</button>}
         </div>
       </header>
 
       <section className="workspace">
         <aside className="rail">
           <button className="rail-item active"><Box size={18} /><span>画布</span></button>
-          <button className={`rail-item ${showNodeLibrary ? "active" : ""}`} onClick={() => { setShowNodeLibrary(true); setShowAssets(false); setShowModelCenter(false); setSelectedNodeId(null); }}><Braces size={18} /><span>{canvasLevel === "production" ? "组件" : "节点"}</span></button>
-           <button className={`rail-item ${showRunHistory ? "active" : ""}`} onClick={() => { setShowRunHistory(true); setShowAssets(false); setShowModelCenter(false); setShowNodeLibrary(false); setShowWorkflowManager(false); }}><Clock3 size={18} /><span>运行</span></button>
-          <button className={`rail-item ${showAssets ? "active" : ""}`} onClick={() => { setShowAssets(true); setShowModelCenter(false); setSelectedNodeId(null); }}><Database size={18} /><span>产物</span></button>
-          <button className={`rail-item ${showModelCenter ? "active" : ""}`} onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={18} /><span>设置</span></button>
+          <button className={`rail-item ${showNodeLibrary ? "active" : ""}`} onClick={() => { setShowNodeLibrary(true); setShowAssets(false); setShowRunHistory(false); setShowModelCenter(false); setSelectedFrameIds([]); setSelectedNodeId(null); }}><Braces size={18} /><span>{canvasLevel === "production" ? "组件" : "节点"}</span></button>
+           <button className={`rail-item ${showRunHistory ? "active" : ""}`} onClick={() => { setShowRunHistory(true); setShowAssets(false); setShowModelCenter(false); setShowNodeLibrary(false); setShowWorkflowManager(false); setSelectedFrameIds([]); }}><Clock3 size={18} /><span>运行</span></button>
+          <button className={`rail-item ${showAssets ? "active" : ""}`} onClick={() => { setShowAssets(true); setShowRunHistory(false); setShowModelCenter(false); setSelectedFrameIds([]); setSelectedNodeId(null); }}><Database size={18} /><span>产物</span></button>
+          <button className={`rail-item ${showModelCenter ? "active" : ""}`} onClick={() => { setShowModelCenter(true); setShowAssets(false); setShowRunHistory(false); setSelectedFrameIds([]); setSelectedNodeId(null); }}><KeyRound size={18} /><span>设置</span></button>
            <div className="rail-version">{runtimeVersion}<br />LOCAL</div>
         </aside>
 
@@ -1756,9 +1769,9 @@ export default function App() {
               onDuplicate={duplicateSelectedNode}
             />
           ) : (
-              <RunInspector run={run} projectId={projectId} events={events} approval={currentApproval} componentNames={Object.fromEntries((productionCanvas?.stages ?? []).map((stage) => [stage.id, stage.title]))} onSelectNode={focusRunNode} onCancel={cancelRun} onOpenAssets={(category) => { setShowAssets(true); setShowRunHistory(false); setShowModelCenter(false); setShowNodeLibrary(false); setSelectedNodeId(null); if (category === "proposals") setWorkflowNotice("请在项目资产的“提案”分类中查看并应用状态变更。"); }} onDecideApproval={async (decision, note) => {
-                if (!currentApproval || !run) return;
-                await api.decideApproval(currentApproval.id, decision, note);
+              <RunInspector run={run} projectId={projectId} events={events} approval={currentApproval} componentNames={Object.fromEntries((productionCanvas?.stages ?? []).map((stage) => [stage.id, stage.title]))} onSelectNode={focusRunNode} onCancel={cancelRun} onOpenAssets={(category) => { setShowAssets(true); setShowRunHistory(false); setShowModelCenter(false); setShowNodeLibrary(false); setSelectedNodeId(null); if (category === "proposals") setWorkflowNotice("请在项目资产的“提案”分类中查看并应用状态变更。"); }} onDecideApproval={async (decision, note, editedContent, reworkFrom) => {
+                 if (!currentApproval || !run) return;
+                 await api.decideApproval(currentApproval.id, decision, note, editedContent, reworkFrom);
                 setApproval(null);
                 setProjectApprovals((current) => current.filter((item) => item.id !== currentApproval.id));
                setRun(await api.getRun(run.id, projectId));
@@ -1792,6 +1805,7 @@ export default function App() {
           </div>
         </div>
       )}
+      {showWelcome && <div className="policy-modal-backdrop"><div className="policy-modal welcome-modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title"><small>FIRST RUN</small><h2 id="welcome-title">三步开始写作</h2><div className="welcome-steps"><article><b>1</b><div><h3>创建作品</h3><p>填写书名和创作简报，系统会把它作为项目长期输入。</p></div></article><article><b>2</b><div><h3>按阶段推进</h3><p>从新书立项开始，依次完成世界、角色、故事、大纲和章节。</p></div></article><article><b>3</b><div><h3>人工把关</h3><p>正文不会自动归档。阅读审查、Diff 和质量门后再批准，或带批示返工。</p></div></article></div><div className="policy-modal-actions"><button onClick={() => { localStorage.setItem("whitebox.welcomeSeen", "1"); setShowWelcome(false); }}>我知道了</button><button className="confirm" onClick={() => { localStorage.setItem("whitebox.welcomeSeen", "1"); setShowWelcome(false); setShowProjectCreator(true); }}>创建第一本书</button></div></div></div>}
       {showDirector && <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="自动导演开书"><div className="policy-modal director-modal"><small>AUTO DIRECTOR</small><h2>从一句灵感开始</h2><p>先生成多个方向候选，确认后再创建项目和官方生产画布。</p><textarea value={directorIdea} onChange={(event) => setDirectorIdea(event.target.value)} placeholder="例如：失忆剑客在旧戏楼醒来，发现另一个自己正在追杀他" />{directorCandidates.length === 0 ? <button className="primary-panel-button" disabled={!directorIdea.trim()} onClick={async () => { try { const result = await api.generateDirectorCandidates(directorIdea.trim()); setDirectorCandidates(result.candidates); } catch (reason) { setError(readApiError(reason as Error)); } }}>生成方向候选</button> : <><div className="director-candidate-list">{directorCandidates.map((candidate) => <button key={String(candidate.id)} className={selectedDirectorCandidate?.id === candidate.id ? "active" : ""} onClick={() => setSelectedDirectorCandidate(candidate)}><b>{String(candidate.title_hint)}</b><span>{String(candidate.promise)}</span><small>{String(candidate.engine)}</small></button>)}</div><div className="policy-modal-actions"><button onClick={() => { setDirectorCandidates([]); setSelectedDirectorCandidate(null); }}>重新生成</button><button className="confirm" disabled={!selectedDirectorCandidate} onClick={async () => { if (!selectedDirectorCandidate) return; const title = String(selectedDirectorCandidate.title_hint || "未命名小说"); try { const result = await api.confirmDirectorCandidate(title, slugify(title), selectedDirectorCandidate); setProjects((current) => [result.project, ...current]); setProjectId(result.project.id); setChapterNumber(1); setShowDirector(false); setDirectorIdea(""); setDirectorCandidates([]); setSelectedDirectorCandidate(null); } catch (reason) { setError(readApiError(reason as Error)); } }}>确认方向并创建项目</button></div></>}</div></div>}
       {workspaceNode && <ExecutionNodeWorkspace
         node={workspaceNode}
@@ -1847,7 +1861,7 @@ function ProductionPreflightModal({ preflight, stageId, onClose, onScopeChange, 
   useModalBehavior(true, onClose);
   const selectScope = (next: "all" | "current_downstream") => { setScope(next); void onScopeChange(next, allowSideEffects); };
   const toggleSideEffects = (allow: boolean) => { setAllowSideEffects(allow); void onScopeChange(scope, allow); };
-  return <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="运行作品流程预检"><div className="policy-modal production-preflight"><small>PRODUCTION PREFLIGHT</small><h2>确认运行作品流程</h2><p>先选择执行范围。确认后才会创建统一 Production Run。</p><div className="preflight-scope"><label><input type="radio" checked={scope === "all"} onChange={() => selectScope("all")} />运行全部已配置组件</label><label><input type="radio" disabled={!stageId} checked={scope === "current_downstream"} onChange={() => selectScope("current_downstream")} />从当前组件运行到下游</label></div><div className="preflight-facts"><div><b>{preflight.components.length}</b><span>组件</span></div><div><b>{preflight.node_count}</b><span>内部节点</span></div><div><b>{preflight.model_calls}</b><span>模型调用</span></div><div><b>{preflight.approval_nodes}</b><span>人工审批</span></div><div><b>{preflight.side_effects}</b><span>副作用节点</span></div></div><section className="preflight-components">{preflight.components.map((component) => <div key={component.stage_id}><span className={component.configured ? "stage-status-dot" : "stage-status-dot missing"} /><b>{component.title}</b><small>{component.configured ? `${component.node_count} 个内部节点` : "未配置 Workflow"}</small></div>)}</section>{preflight.side_effects > 0 && <label className="preflight-side-effect"><input type="checkbox" checked={allowSideEffects} onChange={(event) => toggleSideEffects(event.target.checked)} />我明确允许本次运行执行文件写入等副作用</label>}{preflight.errors.length > 0 && <div className="preflight-errors">{preflight.errors.map((error) => <p key={error}>{error}</p>)}</div>}<div className="policy-modal-actions"><button onClick={onClose}>取消</button><button className="confirm" disabled={!preflight.valid} onClick={() => void onConfirm(scope, allowSideEffects)}>确认并运行</button></div></div></div>;
+  return <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="运行作品流程预检"><div className="policy-modal production-preflight"><small>PRODUCTION PREFLIGHT</small><h2>确认运行作品流程</h2><p>先选择执行范围。确认后才会创建统一 Production Run。</p><div className="preflight-scope"><label><input type="radio" checked={scope === "all"} onChange={() => selectScope("all")} />运行全部已配置组件</label><label><input type="radio" disabled={!stageId} checked={scope === "current_downstream"} onChange={() => selectScope("current_downstream")} />从当前组件运行到下游</label></div><div className="preflight-facts"><div><b>{preflight.components.length}</b><span>组件</span></div><div><b>{preflight.node_count}</b><span>内部节点</span></div><div><b>{preflight.approval_nodes}</b><span>人工审批</span></div><div><b>{preflight.side_effects}</b><span>副作用节点</span></div></div><section className="preflight-components">{preflight.components.map((component) => <div key={component.stage_id}><span className={component.configured ? "stage-status-dot" : "stage-status-dot missing"} /><b>{component.title}</b><small>{component.configured ? `${component.node_count} 个内部节点` : "未配置 Workflow"}</small></div>)}</section>{preflight.side_effects > 0 && <label className="preflight-side-effect"><input type="checkbox" checked={allowSideEffects} onChange={(event) => toggleSideEffects(event.target.checked)} />我明确允许本次运行执行文件写入等副作用</label>}{preflight.errors.length > 0 && <div className="preflight-errors">{preflight.errors.map((error) => <p key={error}>{error}</p>)}</div>}<div className="policy-modal-actions"><button onClick={onClose}>取消</button><button className="confirm" disabled={!preflight.valid} onClick={() => void onConfirm(scope, allowSideEffects)}>确认并运行</button></div></div></div>;
 }
 
 function RunHistoryPanel({ runs, activeRunId, onSelect }: { runs: Run[]; activeRunId: string | null; onSelect: (runId: string) => Promise<void> }) {
@@ -1861,7 +1875,7 @@ function RunHistoryPanel({ runs, activeRunId, onSelect }: { runs: Run[]; activeR
   };
   return <div className="inspector-body run-history-panel">
     <section className="workflow-manager-hero"><small>RUN HISTORY</small><h2>运行历史</h2><p>查看当前项目的执行快照。点击一条运行记录可恢复节点状态和 Artifact 透视。</p></section>
-    <section><div className="section-label">RECENT RUNS</div><div className="run-history-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Workflow 或 Run ID" /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>{compareIds.length === 2 && <button className="primary-panel-button" onClick={() => void api.compareRuns(compareIds[0], compareIds[1]).then(setComparison)}>比较已选 Run</button>}{runs.length === 0 ? <p className="empty-note">当前项目还没有运行记录。</p> : <div className="run-history-list">{runs.filter((item) => (statusFilter === "all" || item.status === statusFilter) && `${item.id} ${item.workflow_id}`.toLowerCase().includes(query.toLowerCase())).map((item) => <div className="run-history-row" key={item.id}><input type="checkbox" aria-label={`选择 Run ${item.id.slice(0, 8)} 进行比较`} checked={compareIds.includes(item.id)} onChange={(event) => setCompareIds((current) => event.target.checked ? [...current.filter((id) => id !== item.id).slice(-1), item.id] : current.filter((id) => id !== item.id))} /><button className={item.id === activeRunId ? "active" : ""} onClick={() => void onSelect(item.id)}><span><b>{item.workflow_id.startsWith("production:") ? "作品流程" : item.workflow_id}</b><small>{new Date(item.created_at).toLocaleString()} · {item.node_runs.length} 个节点 · {item.id.slice(0, 8)}</small></span><code>{statusLabel[item.status] ?? item.status}</code></button></div>)}</div>}</section>
+    <section><div className="section-label">RECENT RUNS</div><div className="run-history-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索章节、Workflow 或 Run ID" /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>{compareIds.length === 2 && <button className="primary-panel-button" onClick={() => void api.compareRuns(compareIds[0], compareIds[1]).then(setComparison)}>比较已选 Run</button>}{runs.length === 0 ? <p className="empty-note">当前项目还没有运行记录。</p> : <div className="run-history-list">{runs.filter((item) => { const chapter = item.snapshot?.run_context?.chapter_number; return (statusFilter === "all" || item.status === statusFilter) && `${item.id} ${item.workflow_id} ${chapter ? `第 ${chapter} 章` : ""}`.toLowerCase().includes(query.toLowerCase()); }).map((item) => { const chapter = item.snapshot?.run_context?.chapter_number; return <div className="run-history-row" key={item.id}><input type="checkbox" aria-label={`选择 Run ${item.id.slice(0, 8)} 进行比较`} checked={compareIds.includes(item.id)} onChange={(event) => setCompareIds((current) => event.target.checked ? [...current.filter((id) => id !== item.id).slice(-1), item.id] : current.filter((id) => id !== item.id))} /><button className={item.id === activeRunId ? "active" : ""} onClick={() => void onSelect(item.id)}><span><b>{chapter ? `第 ${chapter} 章` : item.workflow_id.startsWith("production:") ? "作品流程" : item.workflow_id}</b><small>{item.snapshot?.run_context?.project_title ?? "当前作品"} · {new Date(item.created_at).toLocaleString()}</small><small>{item.node_runs.length} 个节点 · RUN {item.id.slice(0, 8)}</small>{item.completed_at && <small>实际消耗：{item.actual_usage?.model_calls ?? 0} 次调用 · {(item.actual_usage?.total_tokens ?? 0).toLocaleString()} Token</small>}</span><code>{statusLabel[item.status] ?? item.status}</code></button></div>; })}</div>}</section>
     {comparison && <section><div className="section-label">RUN COMPARISON</div><p className="section-help">{comparison.same_graph ? "相同执行图" : "执行图不同"} · {comparison.left_status} → {comparison.right_status}</p><div className="run-comparison-list">{comparison.nodes.map((node) => <div key={node.node_id}><b>{node.node_id}</b><span>{node.left_status ?? "-"} / {node.left_attempt ?? 0}</span><span>{node.right_status ?? "-"} / {node.right_attempt ?? 0}</span></div>)}</div></section>}
   </div>;
 }
@@ -2407,7 +2421,7 @@ function NodeInspector({
               <div key={attempt.id}>
                 <b>#{attempt.attempt}</b>
                 <span className={`text-${attempt.status}`}>{attempt.status}</span>
-                {attempt.cached_from_artifact_id && <code>FROM {attempt.cached_from_artifact_id.slice(0, 8)}</code>}
+                {attempt.cached_from_artifact_id ? <code title="输入、节点配置、项目和章节上下文均未变化，因此复用内容缓存">缓存复用 {attempt.cached_from_artifact_id.slice(0, 8)}</code> : <code>真实执行</code>}
                 {attempt.error && <small>{attempt.error}</small>}
               </div>
             ))}
@@ -3058,6 +3072,8 @@ function AssetsPanel({ projectId }: { projectId: string }) {
   const [proposalPreview, setProposalPreview] = useState<StatePatchPreview | null>(null);
   const [newAssetName, setNewAssetName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const readerOpen = selected?.category === "manuscript";
+  const readerRef = useModalBehavior(readerOpen, () => setSelected(null));
   const stateSummary = (() => {
     if (!selected || selected.category !== "state") return null;
     try {
@@ -3129,7 +3145,7 @@ function AssetsPanel({ projectId }: { projectId: string }) {
           } catch (reason) { setError(readApiError(reason as Error)); }
         }}>新建</button></div>
       )}
-       {selected && <section className="asset-preview"><div className="section-label">PREVIEW / {selected.content_hash.slice(0, 12)}</div><h3>{selected.name}</h3>{stateSummary && <div className={`state-summary ${"invalid" in stateSummary ? "invalid" : ""}`}><div><b>{stateSummary.fields}</b><span>状态字段</span></div>{stateSummary.arrays.map((item) => <div key={item.name}><b>{item.count}</b><span>{item.name}</span></div>)}{"invalid" in stateSummary && <p>当前内容不是有效 JSON，保存前请修复。</p>}</div>}{selected.category === "manuscript" ? <pre>{prettyContent(selected.content, selected.media_type)}</pre> : <>
+       {selected && selected.category !== "manuscript" && <section className="asset-preview"><div className="section-label">PREVIEW / {selected.content_hash.slice(0, 12)}</div><h3>{selected.name}</h3>{stateSummary && <div className={`state-summary ${"invalid" in stateSummary ? "invalid" : ""}`}><div><b>{stateSummary.fields}</b><span>状态字段</span></div>{stateSummary.arrays.map((item) => <div key={item.name}><b>{item.count}</b><span>{item.name}</span></div>)}{"invalid" in stateSummary && <p>当前内容不是有效 JSON，保存前请修复。</p>}</div>}<>
         <textarea className="asset-editor" value={editContent} onChange={(event) => setEditContent(event.target.value)} />
         <input value={saveNote} onChange={(event) => setSaveNote(event.target.value)} placeholder="版本说明（可选）" />
         <button className="asset-save-button" onClick={async () => {
@@ -3157,7 +3173,7 @@ function AssetsPanel({ projectId }: { projectId: string }) {
             } catch (reason) { setError(readApiError(reason as Error)); }
           }}>恢复为新版本</button>}</div>)}
         </details>}
-      </>}</section>}
+      </></section>}
        {selectedProposal && proposalPreview && <section className="proposal-apply"><div className="section-label">STATE PATCH PREVIEW</div><h3>{proposalPreview.already_applied ? "该提案已应用" : `将执行 ${proposalPreview.operations.length} 项字段变更`}</h3><p className="section-help">这是来自已批准章节的状态变更候选。应用后会创建新的资产版本，不会修改历史版本。</p>{proposalPreview.operations.map((item) => <article className="field-patch" key={item.operation_id}><header><b>{item.operation.toUpperCase()}</b><span>{item.target_relative_path}{item.pointer}</span>{item.finding_id && <code>{item.finding_id}</code>}</header><p>{item.reason}</p><div><section><small>旧值</small><pre>{JSON.stringify(item.old_value, null, 2)}</pre></section><section><small>新值</small><pre>{JSON.stringify(item.new_value, null, 2)}</pre></section></div></article>)}<button disabled={proposalPreview.already_applied} onClick={async () => {
          if (!window.confirm(`确认应用这 ${proposalPreview.operations.length} 项状态变更？应用后会创建新的资产版本。`)) return;
          try {
@@ -3166,6 +3182,7 @@ function AssetsPanel({ projectId }: { projectId: string }) {
            setProposals(await api.getStateProposals(projectId));
         } catch (reason) { setError(readApiError(reason as Error)); }
       }}>人工应用到状态日志</button></section>}
+      {readerOpen && selected && <div className="chapter-reader-backdrop"><article ref={readerRef} tabIndex={-1} className="chapter-reader" role="dialog" aria-modal="true" aria-labelledby="chapter-reader-title"><header><div><small>MANUSCRIPT / {selected.content_hash.slice(0, 12)}</small><h2 id="chapter-reader-title">{selected.name}</h2></div><div><button onClick={() => downloadText(selected.name, selected.content)}><Save size={16} />下载</button><button aria-label="关闭正文阅读器" onClick={() => setSelected(null)}><X size={20} /></button></div></header><div className="chapter-reader-copy">{selected.content}</div><footer><span>{selected.content.length.toLocaleString()} 字符</span><code>{selected.relative_path}</code></footer></article></div>}
     </div>
   );
 }
@@ -3206,7 +3223,7 @@ function RunInspector({ run, projectId, events, approval, componentNames, onSele
   onSelectNode: (id: string) => void;
   onCancel: () => void;
   onOpenAssets: (category: "proposals") => void;
-  onDecideApproval: (decision: "approved" | "rejected", note: string) => Promise<void>;
+  onDecideApproval: (decision: "approved" | "rejected", note: string, editedContent?: string, reworkFrom?: "writer" | "reviewer" | "reviser") => Promise<void>;
 }) {
   const [approvalNote, setApprovalNote] = useState("");
   const [evidenceArtifacts, setEvidenceArtifacts] = useState<Record<string, Artifact>>({});
@@ -3214,6 +3231,9 @@ function RunInspector({ run, projectId, events, approval, componentNames, onSele
   const [editableDraft, setEditableDraft] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const [draftExpectedHash, setDraftExpectedHash] = useState<string | null>(null);
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [decisionError, setDecisionError] = useState("");
+  const [reworkFrom, setReworkFrom] = useState<"writer" | "reviewer" | "reviser">("reviser");
   const chapterEvidence = run?.node_runs.filter((item) => ["writing.llm_draft", "writing.llm_review", "writing.llm_arbiter", "writing.llm_revision", "writing.revision_diff", "writing.quality_gate"].includes(item.node_type)) ?? [];
   useEffect(() => {
     const ids = chapterEvidence.filter((item) => item.output_artifact_id).map((item) => [item.id, item.output_artifact_id!] as const);
@@ -3229,10 +3249,11 @@ function RunInspector({ run, projectId, events, approval, componentNames, onSele
   }, [evidenceArtifacts]);
   return (
     <div className="inspector-body">
-      <div className="manifesto">
+           <div className="manifesto">
         <span>WHITEBOX PRINCIPLE 01</span>
-        <p>每一个结果都必须能沿着节点、输入和版本反向追溯。</p>
-      </div>
+             <p>每一个结果都必须能沿着节点、输入和版本反向追溯。</p>
+           </div>
+           {run && run.completed_at && <div className="run-actual-usage"><div className="section-label">ACTUAL USAGE</div><b>{run.actual_usage?.model_calls ?? 0} 次模型调用</b><span>{(run.actual_usage?.total_tokens ?? 0).toLocaleString()} Token</span></div>}
       {!run ? <p className="empty-note">运行工作流后，这里将显示持久事件与节点证据。</p> : (
         <>
           {run.node_runs.find((item) => ["failed", "waiting_approval"].includes(item.status)) && (() => {
@@ -3242,18 +3263,21 @@ function RunInspector({ run, projectId, events, approval, componentNames, onSele
           {approval && (
             <section className="approval-panel">
               <div className="section-label">HUMAN APPROVAL REQUIRED</div>
-              <h3>批准后才会写入章节文件</h3>
-              <p>请先查看 Revision、Diff 和 Quality Gate 节点证据。驳回不会执行归档或状态提案。</p>
-              <textarea value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} placeholder="审批备注（可选）" />
-              <div><button className="reject" onClick={() => onDecideApproval("rejected", approvalNote)}>驳回</button><button className="approve" onClick={() => onDecideApproval("approved", approvalNote)}>批准并继续归档</button></div>
+              <h3>审阅终稿，再决定是否归档</h3>
+              <p>展开下方草稿、审查、裁决、修订、Diff 与质量门逐项核对。你在“作者终稿”里的修改会作为新的不可变 Revision 进入正式归档，不再只保存为旁路草稿。</p>
+              <label htmlFor="approval-note">给工作流的批示</label>
+              <textarea id="approval-note" value={approvalNote} onChange={(event) => { setApprovalNote(event.target.value); setDecisionError(""); }} placeholder="写明必须修改处、保留项或批准理由。驳回时必填。" />
+              <label htmlFor="rework-from">驳回后退回</label><select id="rework-from" value={reworkFrom} onChange={(event) => setReworkFrom(event.target.value as typeof reworkFrom)}><option value="reviser">定向修订：按批示修改现稿</option><option value="reviewer">独立审查：重新审查并裁决</option><option value="writer">写手：按批示整章重写</option></select>
+              {decisionError && <p className="approval-error" role="alert">{decisionError}</p>}
+              <div><button className="reject" disabled={decisionBusy} onClick={() => { if (!approvalNote.trim()) { setDecisionError("驳回前请填写具体批示，避免反馈丢失。"); return; } setDecisionBusy(true); void onDecideApproval("rejected", approvalNote, undefined, reworkFrom).catch((reason) => { setDecisionError(readApiError(reason as Error)); setDecisionBusy(false); }); }}>驳回并启动返工</button><button className="approve" disabled={decisionBusy} onClick={() => { setDecisionBusy(true); void onDecideApproval("approved", approvalNote, editableDraft || undefined).catch((reason) => { setDecisionError(readApiError(reason as Error)); setDecisionBusy(false); }); }}>{decisionBusy ? "提交中…" : draftSaved ? "提交修改并重新检查" : "批准终稿并归档"}</button></div>
             </section>
            )}
-          {run.status === "succeeded" && run.node_runs.some((item) => item.node_type === "writing.state_proposal" && item.output_artifact_id) && <button className="attention-node-button" onClick={() => onOpenAssets("proposals")}>查看本次运行生成的状态提案</button>}
+          {run.status === "succeeded" && run.node_runs.some((item) => item.node_type === "writing.state_proposal" && item.output_artifact_id) && <><p className="proposal-next-step">章节已归档；状态变更仍是待应用提案，不会自动覆盖长期设定。</p><button className="attention-node-button" onClick={() => onOpenAssets("proposals")}>查看并人工应用状态提案</button></>}
           {run.status === "running" && (
             <button className="cancel-button" onClick={onCancel}><Square size={13} fill="currentColor" /> 取消当前运行</button>
           )}
           {chapterEvidence.length > 0 && <section className="chapter-evidence-panel"><div className="section-label">CHAPTER EVIDENCE</div><h3>章节写审裁修证据</h3><div>{chapterEvidence.map((item) => { const evidence = evidenceArtifacts[item.id]; const expanded = expandedEvidenceId === item.id; return <div className="chapter-evidence-item" key={item.id}><button className={`status-${item.status}`} onClick={() => setExpandedEvidenceId(expanded ? null : item.id)}><span className="stage-status-dot" /><b>{item.node_type === "writing.llm_draft" ? "草稿" : item.node_type === "writing.llm_review" ? "独立审查" : item.node_type === "writing.llm_arbiter" ? "意见裁决" : item.node_type === "writing.llm_revision" ? "定向修订" : item.node_type === "writing.revision_diff" ? "文本 Diff" : "质量门"}</b><small>{item.status} · Attempt {item.attempt}</small><ChevronRight size={13} /></button>{expanded && evidence && <div className="chapter-evidence-detail">{evidence.content.text && <pre>{evidence.content.text}</pre>}{evidence.content.findings && <div>{evidence.content.findings.map((finding) => <article key={finding.id}><b>{finding.id} · {finding.severity}</b><blockquote>{finding.quote}</blockquote><p>{finding.evidence}</p><small>{finding.recommendation}</small></article>)}</div>}{evidence.content.decisions && <pre>{JSON.stringify(evidence.content.decisions, null, 2)}</pre>}{evidence.content.unified_diff && <pre className="diff-view">{evidence.content.unified_diff}</pre>}{evidence.content.checks && <pre>{JSON.stringify(evidence.content.checks, null, 2)}</pre>}<button onClick={() => onSelectNode(item.node_id)}>打开完整节点证据</button></div>}</div>; })}</div></section>}
-          {editableDraft && <section className="chapter-draft-editor"><div className="section-label">AUTHOR DRAFT WORKSPACE</div><h3>作者编辑稿</h3><p className="section-help">编辑不会修改不可变 Artifact。保存后会创建新的项目草稿资产版本。</p><textarea value={editableDraft} onChange={(event) => { setEditableDraft(event.target.value); setDraftSaved(false); }} /><button className="primary-panel-button" disabled={draftSaved || !editableDraft.trim()} onClick={() => void api.saveRunChapterDraft(run.id, editableDraft, draftExpectedHash).then((saved) => { setDraftExpectedHash(saved.content_hash); setDraftSaved(true); })}>{draftSaved ? "已保存版本" : "保存作者编辑稿"}</button></section>}
+          {editableDraft && <section className="chapter-draft-editor"><div className="section-label">AUTHOR FINAL DRAFT</div><h3>作者终稿</h3><p className="section-help">可直接校改全文。修改后提交会自动从独立审查开始重新检查，生成新 Diff、质量门和审批证据，不会用旧证据直接归档。</p><textarea aria-label="作者终稿正文" value={editableDraft} onChange={(event) => { setEditableDraft(event.target.value); setDraftSaved(true); }} /><button className="primary-panel-button" disabled={!draftSaved || !editableDraft.trim()} onClick={() => void api.saveRunChapterDraft(run.id, editableDraft, draftExpectedHash).then((saved) => { setDraftExpectedHash(saved.content_hash); setDraftSaved(false); })}>{draftSaved ? "保存草稿版本" : "草稿版本已保存"}</button></section>}
           <section>
             <div className="section-label">NODE RUNS</div>
               <div className="hierarchical-run-list">

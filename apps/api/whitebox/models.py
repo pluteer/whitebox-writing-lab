@@ -441,8 +441,9 @@ class Revision(BaseModel):
     text: str = Field(min_length=1)
     changes: list[RevisionChange]
     summary: str = Field(min_length=1)
+    evidence_warnings: list[str] = Field(default_factory=list)
 
-    def validate_against(self, original_text: str, decisions: DecisionSet) -> None:
+    def validate_against(self, original_text: str, decisions: DecisionSet) -> list[str]:
         change_ids = [item.finding_id for item in self.changes]
         if len(change_ids) != len(set(change_ids)):
             raise ValueError("每条裁决只能对应一项修订映射")
@@ -460,11 +461,13 @@ class Revision(BaseModel):
             raise ValueError(
                 f"修订归因不完整，缺失={sorted(missing)}，越权={sorted(forbidden)}，未知={sorted(unknown)}"
             )
+        warnings = []
         for change in self.changes:
             if change.before_quote not in original_text:
-                raise ValueError(f"修订 {change.finding_id} 的原文引文不存在")
+                warnings.append(f"修订 {change.finding_id} 的原文引文不存在")
             if change.after_quote not in self.text:
-                raise ValueError(f"修订 {change.finding_id} 的新文引文不存在")
+                warnings.append(f"修订 {change.finding_id} 的新文引文不存在")
+        return warnings
 
 
 class TextDiff(BaseModel):
@@ -499,6 +502,8 @@ class ApprovalDecisionRequest(BaseModel):
     decision: Literal["approved", "rejected"]
     note: str = Field(default="", max_length=1000)
     actor: str = Field(default="local-user", min_length=1, max_length=120)
+    edited_content: str | None = Field(default=None, max_length=500_000)
+    rework_from: Literal["writer", "reviewer", "reviser"] = "reviser"
 
 
 class ApprovalRecord(BaseModel):
@@ -992,6 +997,7 @@ class Run(BaseModel):
     created_at: datetime
     completed_at: datetime | None
     node_runs: list[NodeRun] = Field(default_factory=list)
+    actual_usage: dict[str, int] = Field(default_factory=lambda: {"model_calls": 0, "total_tokens": 0})
 
 
 class Event(BaseModel):

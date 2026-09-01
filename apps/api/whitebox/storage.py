@@ -408,6 +408,30 @@ class Storage:
             )
         return self.get_project(project_id)
 
+    def delete_project(self, project_id: str) -> bool:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM projects WHERE id=?", (project_id,)).fetchone():
+                return False
+            run_ids = []
+            for row in db.execute("SELECT id,snapshot FROM runs").fetchall():
+                graph = ExecutionGraph.model_validate_json(row["snapshot"])
+                if graph.run_context.get("project_id") == project_id:
+                    run_ids.append(row["id"])
+            for run_id in run_ids:
+                db.execute("DELETE FROM provider_calls WHERE attempt_id IN (SELECT na.id FROM node_attempts na JOIN node_runs nr ON nr.id=na.node_run_id WHERE nr.run_id=?)", (run_id,))
+                db.execute("DELETE FROM node_attempts WHERE node_run_id IN (SELECT id FROM node_runs WHERE run_id=?)", (run_id,))
+                db.execute("DELETE FROM approvals WHERE run_id=?", (run_id,))
+                db.execute("DELETE FROM cache_entries WHERE artifact_id IN (SELECT id FROM artifacts WHERE run_id=?)", (run_id,))
+                db.execute("DELETE FROM artifacts WHERE run_id=?", (run_id,))
+                db.execute("DELETE FROM events WHERE run_id=?", (run_id,))
+                db.execute("DELETE FROM node_runs WHERE run_id=?", (run_id,))
+                db.execute("DELETE FROM runs WHERE id=?", (run_id,))
+            for table in ("production_canvases", "asset_versions", "reference_books", "prompt_overrides", "prompt_override_versions", "state_patch_applications"):
+                db.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))  # noqa: S608
+            db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+        return True
+
     def get_production_canvas(self, project_id: str) -> ProductionCanvas | None:
         with self._connect() as db:
             row = db.execute(
@@ -1106,7 +1130,7 @@ class Storage:
         completed_at = utc_now() if status in {"succeeded", "failed", "cancelled"} else None
         with self._lock, self._connect() as db:
             db.execute(
-                "UPDATE runs SET status=?, completed_at=COALESCE(?, completed_at) WHERE id=?",
+                "UPDATE runs SET status=?, completed_at=? WHERE id=?",
                 (status, completed_at, run_id),
             )
 
@@ -1322,11 +1346,17 @@ class Storage:
             node_rows = db.execute(
                 "SELECT * FROM node_runs WHERE run_id=? ORDER BY rowid", (run_id,)
             ).fetchall()
+            usage_row = db.execute(
+                "SELECT COUNT(*) AS model_calls, COALESCE(SUM(CAST(json_extract(usage, '$.total_tokens') AS INTEGER)), 0) AS total_tokens "
+                "FROM provider_calls pc JOIN node_attempts na ON na.id=pc.attempt_id JOIN node_runs nr ON nr.id=na.node_run_id WHERE nr.run_id=?",
+                (run_id,),
+            ).fetchone()
         return Run(
             id=row["id"], workflow_id=row["workflow_id"], status=row["status"],
             graph_hash=row["graph_hash"], snapshot=ExecutionGraph.model_validate_json(row["snapshot"]),
             created_at=row["created_at"], completed_at=row["completed_at"],
             node_runs=[self._node_run_from_row(item) for item in node_rows],
+            actual_usage={"model_calls": int(usage_row["model_calls"]), "total_tokens": int(usage_row["total_tokens"])},
         )
 
     def get_latest_run_for_workflow(self, workflow_id: str, project_id: str | None = None) -> Run | None:
@@ -1471,6 +1501,53 @@ class Storage:
                 ),
             )
         return self.get_approval(approval_id)
+
+    def append_approval_artifact(self, approval_id: str, artifact_id: str) -> bool:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT artifact_ids,status FROM approvals WHERE id=?", (approval_id,)
+            ).fetchone()
+            if not row or row["status"] != "pending":
+                return False
+            artifact_ids = json.loads(row["artifact_ids"])
+            if artifact_id not in artifact_ids:
+                artifact_ids.append(artifact_id)
+            db.execute(
+                "UPDATE approvals SET artifact_ids=? WHERE id=?",
+                (json.dumps(artifact_ids), approval_id),
+            )
+        return True
+
+    def delete_approval(self, approval_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute("DELETE FROM approvals WHERE id=?", (approval_id,))
+
+    def replace_node_output(self, node_run_id: str, artifact_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "UPDATE node_runs SET status='succeeded',output_artifact_id=?,error=NULL,completed_at=? WHERE id=?",
+                (artifact_id, utc_now(), node_run_id),
+            )
+
+    def append_run_node_instruction(self, run_id: str, node_id: str, note: str) -> None:
+        with self._lock, self._connect() as db:
+            row = db.execute("SELECT snapshot FROM runs WHERE id=?", (run_id,)).fetchone()
+            if not row:
+                raise ValueError("运行不存在")
+            graph = ExecutionGraph.model_validate_json(row["snapshot"])
+            node = next((item for item in graph.nodes if item.id == node_id), None)
+            if not node:
+                raise ValueError("返工目标节点不存在")
+            current = str(node.config.get("instruction", "")).strip()
+            node.config["instruction"] = f"{current}\n\n人工返工批示：{note}".strip()
+            graph.graph_hash = hashlib.sha256(
+                json.dumps(graph.model_dump(exclude={"graph_hash"}), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            db.execute(
+                "UPDATE runs SET snapshot=?,graph_hash=? WHERE id=?",
+                (graph.model_dump_json(), graph.graph_hash, run_id),
+            )
 
     def get_node_run(self, node_run_id: str) -> NodeRun | None:
         with self._connect() as db:

@@ -61,7 +61,7 @@ def test_revision_must_follow_accepted_and_rejected_decisions() -> None:
         }],
         "summary": "修订",
     })
-    valid.validate_against("旧 A，B 保持。", decisions)
+    assert valid.validate_against("旧 A，B 保持。", decisions) == []
 
     invalid = Revision.model_validate({
         **valid.model_dump(),
@@ -72,6 +72,17 @@ def test_revision_must_follow_accepted_and_rejected_decisions() -> None:
     })
     with pytest.raises((ValueError, ValidationError), match="越权"):
         invalid.validate_against("旧 A，B 保持。", decisions)
+
+    bad_quote = Revision.model_validate({
+        **valid.model_dump(),
+        "changes": [{
+            "finding_id": "F1", "description": "修改 A",
+            "before_quote": "模型编造的旧文", "after_quote": "模型编造的新文",
+        }],
+    })
+    assert bad_quote.validate_against("旧 A，B 保持。", decisions) == [
+        "修订 F1 的原文引文不存在", "修订 F1 的新文引文不存在",
+    ]
 
 
 def test_custom_prompt_template_renders_known_variables_and_rejects_unknown() -> None:

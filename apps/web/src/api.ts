@@ -125,9 +125,9 @@ export const api = {
   addProviderModel: (model: ProviderModelInput) => request<ProviderModel>("/api/provider-models", { method: "POST", body: JSON.stringify(model) }),
   getArtifact: (artifactId: string, projectId?: string) => request<Artifact>(`/api/artifacts/${artifactId}${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   getApprovals: (projectId: string) => request<ApprovalRecord[]>(`/api/approvals?project_id=${encodeURIComponent(projectId)}`),
-  decideApproval: (id: string, decision: "approved" | "rejected", note: string) =>
-    request<ApprovalRecord>(`/api/approvals/${id}/decide`, {
-      method: "POST", body: JSON.stringify({ decision, note, actor: "local-user" }),
+  decideApproval: (id: string, decision: "approved" | "rejected", note: string, editedContent?: string, reworkFrom: "writer" | "reviewer" | "reviser" = "reviser") =>
+    request<ApprovalRecord | { status: "rechecking" | "reworking"; run_id: string }>(`/api/approvals/${id}/decide`, {
+      method: "POST", body: JSON.stringify({ decision, note, actor: "local-user", edited_content: editedContent, rework_from: reworkFrom }),
     }),
   getProjects: () => request<Project[]>("/api/projects"),
   exportProject: (projectId: string) => request<Record<string, unknown>>(`/api/projects/${projectId}/export`),
@@ -137,6 +137,7 @@ export const api = {
   createProject: (title: string, slug: string, brief = "", genre = "") => request<Project>("/api/projects", {
     method: "POST", body: JSON.stringify({ title, slug, brief, genre }),
   }),
+  deleteProject: (projectId: string) => request<void>(`/api/projects/${projectId}`, { method: "DELETE" }),
   getProductionCanvas: (projectId: string) =>
     request<ProductionCanvas>(`/api/projects/${projectId}/production-canvas`),
   saveProductionCanvas: (projectId: string, canvas: ProductionCanvas, expectedRevision: number) =>

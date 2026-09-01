@@ -23,7 +23,7 @@ def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
         info = client.get("/api/runtime-info")
 
     assert info.status_code == 200
-    assert info.json()["version"] == "0.4.3"
+    assert info.json()["version"] == "0.4.4"
     assert info.json()["mode"] == "development"
     assert info.json()["database_path"] == str(database)
     assert info.json()["secrets_path"] == str(secrets)
@@ -112,6 +112,21 @@ def test_run_history_can_be_filtered_by_project(tmp_path) -> None:
         response = client.get("/api/runs?project_id=demo-project")
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_project_delete_removes_owned_runs_and_files(tmp_path) -> None:
+    project_root = tmp_path / "delete-projects"
+    app = create_app(tmp_path / "delete-project.db", FakeDeepSeekProvider(), project_root=project_root)
+    workflow = {"id": "delete-source", "name": "delete", "revision": 1, "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "x"}}], "edges": []}
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "待删除", "slug": "delete-me", "brief": "测试"}).json()
+        run_id = client.post("/api/runs", json={"workflow": workflow, "project_id": project["id"]}).json()["runId"]
+        wait_for_status(client, run_id, {"succeeded"})
+        response = client.delete(f"/api/projects/{project['id']}")
+        missing_run = client.get(f"/api/runs/{run_id}")
+    assert response.status_code == 204
+    assert missing_run.status_code == 404
+    assert not (project_root / "delete-me").exists()
 
 
 class FakeDeepSeekProvider:
@@ -1008,7 +1023,99 @@ def test_run_pauses_for_approval_and_archives_only_after_approval(tmp_path) -> N
     assert archive_run["status"] == "succeeded"
 
 
-def test_rejected_approval_never_archives_chapter(tmp_path) -> None:
+def test_approved_author_edit_is_rechecked_before_archive(tmp_path) -> None:
+    project_root = tmp_path / "author-edit-project"
+    app = create_app(
+        tmp_path / "author-edit.db", FakeDeepSeekProvider(), project_root=project_root
+    )
+    with TestClient(app) as client:
+        run_id = client.post(
+            "/api/runs", json={"workflow": DEFAULT_WORKFLOW.model_dump(mode="json")}
+        ).json()["runId"]
+        wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
+        approval = next(item for item in client.get("/api/approvals").json() if item["run_id"] == run_id)
+        decision = client.post(f"/api/approvals/{approval['id']}/decide", json={
+            "decision": "approved", "actor": "author", "note": "作者校改终稿",
+            "edited_content": "这是作者在审核工作台确认的最终正文。",
+        })
+        assert decision.json()["status"] == "rechecking"
+        wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
+        refreshed = client.get(f"/api/runs/{run_id}").json()
+        reviewer = next(item for item in refreshed["node_runs"] if item["node_id"] == "reviewer")
+        reviewer_attempts = client.get(f"/api/node-runs/{reviewer['id']}/attempts").json()
+        recheck_input = client.get(f"/api/artifacts/{reviewer_attempts[-1]['input_artifact_ids'][0]}").json()
+        second_approval = next(item for item in client.get("/api/approvals").json() if item["run_id"] == run_id)
+        assert second_approval["id"] != approval["id"]
+        assert recheck_input["content"]["text"] == "这是作者在审核工作台确认的最终正文。"
+        client.post(f"/api/approvals/{second_approval['id']}/decide", json={
+            "decision": "approved", "actor": "author", "note": "复审证据已确认",
+        })
+        succeeded = wait_for_status(client, run_id, {"succeeded"}, timeout=15)
+        archive_run = next(item for item in succeeded["node_runs"] if item["node_id"] == "archive")
+
+    target = project_root / "demo" / "manuscript" / "chapter-0001.md"
+    assert decision.status_code == 200
+    assert target.exists()
+    assert archive_run["status"] == "succeeded"
+
+
+def test_rejected_approval_requires_actionable_note(tmp_path) -> None:
+    app = create_app(tmp_path / "rejection-note.db", FakeDeepSeekProvider())
+    with TestClient(app) as client:
+        run_id = client.post(
+            "/api/runs", json={"workflow": DEFAULT_WORKFLOW.model_dump(mode="json")}
+        ).json()["runId"]
+        wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
+        approval = next(item for item in client.get("/api/approvals").json() if item["run_id"] == run_id)
+        response = client.post(f"/api/approvals/{approval['id']}/decide", json={
+            "decision": "rejected", "actor": "author", "note": "",
+        })
+
+    assert response.status_code == 422
+
+
+def test_ten_chapter_author_review_regression(tmp_path) -> None:
+    project_root = tmp_path / "shadow-cthulhu-project"
+    app = create_app(
+        tmp_path / "shadow-cthulhu.db", FakeDeepSeekProvider(), project_root=project_root
+    )
+    inspiration = (
+        "《我的影子是克苏鲁》：诡异、克苏鲁、幕后流、迪化。主角穿越到蒸汽朋克异世界，"
+        "影子被上古邪神寄生；邪神想夺舍，却被更疯的主角反向 PUA，成为外置大脑和打手；"
+        "世人误以为主角是隐秘伟大存在，邪神只是他的宠物。"
+    )
+    workflow = DEFAULT_WORKFLOW.model_copy(deep=True)
+    next(node for node in workflow.nodes if node.id == "brief").config["text"] = inspiration
+
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={
+            "title": "我的影子是克苏鲁", "slug": "shadow-cthulhu",
+            "brief": inspiration, "genre": "诡异 / 克苏鲁 / 幕后流 / 迪化",
+        }).json()
+        for chapter in range(1, 11):
+            run_id = client.post("/api/runs", json={
+                "workflow": workflow.model_dump(mode="json"),
+                "project_id": project["id"], "chapter_number": chapter,
+            }).json()["runId"]
+            wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
+            approval = next(item for item in client.get("/api/approvals").json() if item["run_id"] == run_id)
+            response = client.post(f"/api/approvals/{approval['id']}/decide", json={
+                "decision": "approved", "actor": "author",
+                "note": f"第 {chapter} 章人工审阅完成",
+            })
+            assert response.status_code == 200
+            wait_for_status(client, run_id, {"succeeded"}, timeout=15)
+
+        refreshed = next(item for item in client.get("/api/projects").json() if item["id"] == project["id"])
+
+    manuscript = project_root / "shadow-cthulhu" / "manuscript"
+    assert refreshed["current_chapter"] == 11
+    assert len(list(manuscript.glob("chapter-*.md"))) == 10
+    for chapter in range(1, 11):
+        assert (manuscript / f"chapter-{chapter:04d}.md").read_text(encoding="utf-8").strip()
+
+
+def test_rejected_approval_reworks_selected_node_before_archive(tmp_path) -> None:
     project_root = tmp_path / "rejected-project"
     app = create_app(
         tmp_path / "rejected.db", FakeDeepSeekProvider(), project_root=project_root
@@ -1019,13 +1126,17 @@ def test_rejected_approval_never_archives_chapter(tmp_path) -> None:
         ).json()["runId"]
         wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
         approval = next(item for item in client.get("/api/approvals").json() if item["run_id"] == run_id)
-        client.post(f"/api/approvals/{approval['id']}/decide", json={
-            "decision": "rejected", "actor": "author", "note": "需要重做",
+        response = client.post(f"/api/approvals/{approval['id']}/decide", json={
+            "decision": "rejected", "actor": "author", "note": "加强主角动机后重做",
+            "rework_from": "reviser",
         })
-        rejected = wait_for_status(client, run_id, {"rejected"})
+        assert response.json()["status"] == "reworking"
+        reworked = wait_for_status(client, run_id, {"waiting_approval"}, timeout=15)
 
     assert not (project_root / "demo" / "manuscript" / "chapter-0001.md").exists()
-    assert next(item for item in rejected["node_runs"] if item["node_id"] == "archive")["status"] == "pending"
+    assert next(item for item in reworked["node_runs"] if item["node_id"] == "archive")["status"] == "pending"
+    reviser = next(item for item in reworked["snapshot"]["nodes"] if item["id"] == "revision")
+    assert "加强主角动机后重做" in reviser["config"]["instruction"]
 
 
 def test_projects_isolate_chapter_paths_and_advance_number(tmp_path) -> None:
