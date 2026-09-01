@@ -168,8 +168,12 @@ code, small, .section-label { font-family: Consolas, "Microsoft YaHei", monospac
 .stage-boundary-ports:not(.is-connectable) span { color: transparent; border-top-color: transparent; }.stage-boundary-ports:not(.is-connectable) { margin-top: 0; height: 0; overflow: hidden; }
 .stage-progress { height: 3px; margin-top: 9px; background: #30352a; }.stage-progress span { display: block; height: 100%; background: var(--acid); transition: width .3s; }.stage-progress-detail { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: center; margin-top: 14px; color: #848a7d; font-size: 9px; }.stage-progress-detail b { color: var(--acid); font: 9px Consolas, monospace; }.stage-progress-detail i { grid-column: 1 / 3; height: 5px; overflow: hidden; background: #30352a; }.stage-progress-detail i em { display: block; height: 100%; background: var(--acid); }
 .production-stage-card.is-selected .stage-interaction-hint { color: var(--acid); }
+.production-stage-card.status-waiting_approval { border-color: #d6a23f; box-shadow: 0 24px 60px #0008, 0 0 0 2px #ffbf4b22; }
+.production-stage-card.status-waiting_approval::before { background: #ffbf4b; }
+.stage-approval-callout { display: flex; align-items: center; gap: 6px; margin-top: 9px; padding: 7px 9px; color: #ffd882; border: 1px solid #7c5a24; background: #2a2010; font-size: 9px; font-weight: 700; }
 .status-succeeded .stage-status-dot { background: #62e59d; box-shadow: 0 0 8px #62e59d88; }
 .production-stage-card .react-flow__handle { width: 11px; height: 11px; border-color: #171814; background: #899773; }
+.production-stage-card .overview-edge-handle { opacity: 1; background: var(--acid); }
 .production-stage-card .stage-edge-handle { opacity: 0; pointer-events: none; }
 .workflow-card::before { content: ""; position: absolute; inset: -1px auto -1px -1px; width: 3px; background: #575950; }
 .group-card { width: 100%; height: 100%; border: 1px dashed; pointer-events: auto; }
@@ -188,10 +192,19 @@ code, small, .section-label { font-family: Consolas, "Microsoft YaHei", monospac
 .note-card blockquote { margin: 5px 0; padding-left: 7px; border-left: 2px solid #c6ba78; color: #c5c0a5; }
 .note-editor { min-height: 300px; font-family: Consolas, "Microsoft YaHei", monospace; }
 .frame-card { width: 100%; height: 100%; border: 1px solid; pointer-events: none; }
+.frame-card .frame-edge-handle { width: 10px; height: 10px; border: 2px solid #172014; background: var(--acid); pointer-events: auto; }
 .frame-card header { display: flex; justify-content: space-between; padding: 7px 10px; color: #98adba; font: 9px Consolas, monospace; pointer-events: auto; cursor: move; }
 .workflow-card.is-selected { border-color: var(--acid); transform: translateY(-2px); }
 .workflow-card.is-selected::before, .workflow-card.status-running::before { background: var(--acid); }
 .workflow-card.status-succeeded::before { background: #62e59d; }
+.workflow-card.is-approval { width: 188px; border-color: #a57b32; background: #292012; box-shadow: 0 10px 24px #0008; }
+.workflow-card.is-approval::before { width: 5px; background: #ffbf4b; }
+.workflow-card.is-approval .comfy-node-title { color: #fff4d6; background: linear-gradient(#5a411d, #382913); }
+.workflow-card.is-approval .card-icon, .workflow-card.is-approval .card-heading small { color: #ffcc68; }
+.workflow-card.is-approval > p, .workflow-card.is-approval .profile-chip { display: none; }
+.workflow-card.is-approval.status-waiting_approval { border-color: #ffd36e; box-shadow: 0 0 0 2px #ffbf4b33, 0 0 28px #ffbf4b30; }
+.workflow-card.is-approval.status-waiting_approval .pulse-dot { background: #ffd36e; box-shadow: 0 0 10px #ffd36e; }
+.approval-action-button { color: #171007 !important; border-color: #ffca62 !important; background: #ffca62 !important; }
 .card-index { position: absolute; top: 12px; right: 14px; color: #383a33; font: 600 30px "IBM Plex Mono"; }
 .card-heading { display: flex; align-items: center; gap: 11px; }
 .card-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #43443e; color: var(--acid); }

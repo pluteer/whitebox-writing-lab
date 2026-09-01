@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import hashlib
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -53,13 +54,21 @@ class Storage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 10000")
         connection.execute("PRAGMA synchronous = NORMAL")
-        return connection
+        try:
+            yield connection
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def initialize(self) -> None:
         with self._lock, self._connect() as db:

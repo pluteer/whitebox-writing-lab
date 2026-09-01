@@ -9,6 +9,7 @@ type CardData = {
   agentRole?: string;
   inputs?: Array<{ name: string; type: string; required: boolean }>;
   outputs?: Array<{ name: string; type: string }>;
+  projectionScale?: number;
 };
 
 const statusLabels: Record<string, string> = {
@@ -38,12 +39,12 @@ export function WorkflowCard({ data, selected, type }: NodeProps) {
   const Icon = isSource ? FileInput : isBookSource ? BookOpen : isReview ? FileCheck2 : isArbiter ? Gavel : isDiff ? GitCompare : isQuality ? ShieldCheck : isApproval ? UserCheck : isArchive || isState ? Archive : isRevision || isModel ? BrainCircuit : PenLine;
 
   return (
-    <div className={`workflow-card comfy-node ${selected ? "is-selected" : ""} status-${card.status ?? "idle"}`}>
+    <div className={`workflow-card comfy-node ${isApproval ? "is-approval" : ""} ${selected ? "is-selected" : ""} status-${card.status ?? "idle"}`} style={card.projectionScale ? { transform: `scale(${card.projectionScale})`, transformOrigin: "top left" } : undefined}>
       <div className="comfy-node-title"><span className="card-icon"><Icon size={14} strokeWidth={1.7} /></span><strong>{card.label}</strong><small>{statusLabels[card.status ?? ""] ?? "READY"}</small></div>
       <div className="card-heading">
         <div>
           <small>{isSource ? "INPUT / MOCK" : isBookSource ? "REFERENCE / SOURCE" : isReview ? "REVIEWER / LLM" : isArbiter ? "ARBITER / LLM" : isRevision ? "REVISION / LLM" : isDiff ? "DIFF / SCRIPT" : isQuality ? "GATE / SCRIPT" : isApproval ? "HUMAN / APPROVAL" : isArchive ? "ARCHIVE / SCRIPT" : isState ? "STATE / PROPOSAL" : isAgent ? "AGENT / AGENT" : isPrompt ? "PROMPT / LLM" : isWorkflowBoundary ? "WORKFLOW / BOUNDARY" : isFlow ? "FLOW / CONTROL" : isModel ? "WRITER / LLM" : "TRANSFORM / SCRIPT"}</small>
-           <strong>{isAgent ? "受限工具 Agent" : isPrompt ? "一次 Prompt 调用" : ""}</strong>
+           <strong>{isApproval ? "运行到这里暂停，等待用户决定" : isAgent ? "受限工具 Agent" : isPrompt ? "一次 Prompt 调用" : ""}</strong>
         </div>
       </div>
       <p>{card.detail}</p>
@@ -52,7 +53,7 @@ export function WorkflowCard({ data, selected, type }: NodeProps) {
       <div className="port-list outputs">{card.outputs?.map((port) => <div className="port-row output" key={port.name} title={`输出端口 ${port.name} · ${shortType(port.type)}，拖到其他节点的输入端口`}><span>{port.name}</span><code>{shortType(port.type)}</code><Handle id={port.name} type="source" position={Position.Right} aria-label={`输出端口 ${port.name}，拖到输入端口`} /></div>)}</div>
       <div className="card-footer">
         <span className="pulse-dot" />
-        {statusLabels[card.status ?? ""] ?? "准备就绪"}
+        {isApproval && card.status === "waiting_approval" ? "等待你的审核" : isApproval ? "人工审核点" : statusLabels[card.status ?? ""] ?? "准备就绪"}
       </div>
     </div>
   );

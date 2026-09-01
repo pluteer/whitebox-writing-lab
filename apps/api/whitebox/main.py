@@ -205,7 +205,7 @@ def official_stage_workflow(
     stage_key = workflow_id.removeprefix("official-").replace("-", "_")
     generate_prompt_id, refine_prompt_id = OFFICIAL_STAGE_PROMPT_IDS[stage_key]
     return WorkflowDocument.model_validate({
-        "id": workflow_id, "name": name, "revision": 3,
+        "id": workflow_id, "name": name, "revision": 4,
         "nodes": [
             {
                 "id": "input", "type": "workflow.input", "position": {"x": 80, "y": 180},
@@ -221,7 +221,33 @@ def official_stage_workflow(
                 },
             },
             {
-                "id": "refine", "type": "ai.prompt_call", "position": {"x": 860, "y": 180},
+                "id": "critic", "type": "ai.prompt_call", "position": {"x": 800, "y": 60},
+                "config": {
+                    "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
+                    "temperature": 0.2,
+                    "system_prompt": "你是独立批评者。只指出会影响可执行性、因果、人物主动性和读者承诺的问题，不重写原稿。",
+                    "user_prompt": "独立审查以下阶段草案，输出按严重度排序的具体问题和修改目标：\n\n{{input.text}}",
+                },
+            },
+            {
+                "id": "constraints", "type": "ai.prompt_call", "position": {"x": 800, "y": 390},
+                "config": {
+                    "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
+                    "temperature": 0.1,
+                    "system_prompt": "你是约束检查者。检查上游内容是否违背作者意图、既定设定、输入事实或擅自替作者决定关键偏好。",
+                    "user_prompt": "检查以下阶段草案的约束冲突、缺失输入和待作者决定项：\n\n{{input.text}}",
+                },
+            },
+            {
+                "id": "review-join", "type": "flow.join", "position": {"x": 1110, "y": 220},
+                "config": {"separator": "\n\n--- 约束检查 ---\n\n"},
+            },
+            {
+                "id": "context-join", "type": "flow.join", "position": {"x": 1390, "y": 220},
+                "config": {"separator": "\n\n--- 独立审查与约束 ---\n\n"},
+            },
+            {
+                "id": "refine", "type": "ai.prompt_call", "position": {"x": 1680, "y": 220},
                 "config": {
                     "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
                     "temperature": 0.3, "system_prompt": refine_system,
@@ -230,7 +256,7 @@ def official_stage_workflow(
                 },
             },
             {
-                "id": "output", "type": "workflow.output", "position": {"x": 1220, "y": 180},
+                "id": "output", "type": "workflow.output", "position": {"x": 1990, "y": 220},
                 "config": {"name": "阶段结果"},
             },
         ],
@@ -240,8 +266,32 @@ def official_stage_workflow(
                 "source_port": "value", "target_port": "input",
             },
             {
-                "id": "generate-refine", "source": "generate", "target": "refine",
+                "id": "generate-critic", "source": "generate", "target": "critic",
                 "source_port": "text", "target_port": "input",
+            },
+            {
+                "id": "generate-constraints", "source": "generate", "target": "constraints",
+                "source_port": "text", "target_port": "input",
+            },
+            {
+                "id": "critic-review-join", "source": "critic", "target": "review-join",
+                "source_port": "text", "target_port": "left",
+            },
+            {
+                "id": "constraints-review-join", "source": "constraints", "target": "review-join",
+                "source_port": "text", "target_port": "right",
+            },
+            {
+                "id": "generate-context-join", "source": "generate", "target": "context-join",
+                "source_port": "text", "target_port": "left",
+            },
+            {
+                "id": "review-context-join", "source": "review-join", "target": "context-join",
+                "source_port": "value", "target_port": "right",
+            },
+            {
+                "id": "context-refine", "source": "context-join", "target": "refine",
+                "source_port": "value", "target_port": "input",
             },
             {
                 "id": "refine-output", "source": "refine", "target": "output",
@@ -440,6 +490,12 @@ def create_app(
         )
     def resolve_provider(connection):
         if deepseek_provider is not None and connection["id"] == "deepseek-official":
+            secret = secret_store.get_provider(connection["id"])
+            if hasattr(deepseek_provider, "configure"):
+                deepseek_provider.configure(
+                    api_key=secret.get("api_key"),
+                    base_url=connection["base_url"],
+                )
             return deepseek_provider
         secret = secret_store.get_provider(connection["id"])
         provider_class = (

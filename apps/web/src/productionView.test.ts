@@ -25,14 +25,15 @@ describe("production view", () => {
     expect(nodes[0].data.progressCompleted).toBe(8);
     expect(nodes[0].data.progressTotal).toBe(10);
     expect(nodes[0].data.connectable).toBe(false);
+    expect(nodes[0]).toMatchObject({ initialWidth: 300, initialHeight: 240 });
     expect(nodes[0].ariaLabel).toContain("章节生产");
     expect(nodes[0].ariaLabel).toContain("双击进入");
     expect(nodes[0].selected).toBe(true);
     expect(nodes[0].data.isSelected).toBe(true);
     expect(canvas.stages[0].position).toEqual({ x: 10, y: 20 });
     expect(toProductionEdges(canvas)[0]).toMatchObject({
-      className: "component-edge", sourceHandle: "stage-output-output",
-      targetHandle: "stage-input-input", markerEnd: { type: "arrowclosed" },
+      className: "component-edge", sourceHandle: "overview-output",
+      targetHandle: "overview-input", markerEnd: { type: "arrowclosed" },
     });
   });
 
@@ -46,9 +47,13 @@ describe("production view", () => {
     };
     const projection = toProductionWorkflowNodes(canvas, [workflow]);
     expect(projection.nodes.some((node) => node.id === "stage-frame:chapter")).toBe(true);
-    expect(projection.nodes.find((node) => node.id === "stage-node:chapter:input")).toMatchObject({ parentId: "stage-frame:chapter", extent: "parent" });
+    expect(projection.nodes.find((node) => node.id === "stage-frame:chapter")).toMatchObject({ initialWidth: 650, initialHeight: 430, style: { zIndex: 0 } });
+    expect(projection.nodes.find((node) => node.id === "stage-node:chapter:input")).toMatchObject({ position: { x: 32, y: 68 } });
+    expect(projection.nodes.find((node) => node.id === "stage-node:chapter:input")?.style).not.toHaveProperty("transform");
+    expect(projection.nodes.find((node) => node.id === "stage-node:chapter:input")?.data.projectionScale).toBeGreaterThan(0);
     expect(projection.nodes.find((node) => node.id === "stage-frame:chapter")?.data).toMatchObject({ frameStatus: "示例流程", isPinned: false, isSample: true });
     expect(projection.edges.some((edge) => edge.id === "stage-edge:chapter:input-output")).toBe(true);
+    expect(projection.edges.find((edge) => edge.id === "component-edge:chapter-next")).toMatchObject({ sourceHandle: "frame-output", targetHandle: "frame-input" });
   });
 
   it("uses the stage-specific published document when frames pin different revisions", () => {

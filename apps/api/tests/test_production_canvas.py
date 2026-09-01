@@ -167,9 +167,16 @@ def test_official_stage_workflows_compile_as_whitebox_prompt_chains(tmp_path) ->
             validation = client.post("/api/workflows/validate", json=workflow)
             assert validation.status_code == 200
             assert validation.json()["valid"] is True
-            assert [node["type"] for node in workflow["nodes"]] == [
-                "workflow.input", "ai.prompt_call", "ai.prompt_call", "workflow.output",
-            ]
+            node_types = [node["type"] for node in workflow["nodes"]]
+            assert node_types.count("ai.prompt_call") == 4
+            assert node_types.count("flow.join") == 2
+            assert node_types[0] == "workflow.input"
+            assert node_types[-1] == "workflow.output"
+            assert {edge["id"] for edge in workflow["edges"]} >= {
+                "generate-critic", "generate-constraints", "critic-review-join",
+                "constraints-review-join", "generate-context-join", "review-context-join",
+                "context-refine", "refine-output",
+            }
 
 
 def test_user_can_create_and_remove_project_private_workflow_component(tmp_path) -> None:

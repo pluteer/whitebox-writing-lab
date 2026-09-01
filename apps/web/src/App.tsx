@@ -9,6 +9,7 @@ import {
   applyEdgeChanges,
   applyNodeChanges,
   addEdge,
+  useUpdateNodeInternals,
   type Edge,
   type EdgeChange,
   type Connection,
@@ -17,7 +18,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Box, Braces, Check, ChevronLeft, ChevronRight, Clock3, Database, Feather, FileSearch, KeyRound, Play, Redo2, RefreshCw, RotateCcw, Save, Square, Trash2, Undo2, Wrench, X } from "lucide-react";
+import { Box, Braces, Check, ChevronLeft, ChevronRight, Clock3, Database, Feather, FileSearch, KeyRound, Play, Redo2, RefreshCw, RotateCcw, Save, Square, Trash2, Undo2, UserCheck, Wrench, X } from "lucide-react";
 
 import { api, eventUrl, readApiError } from "./api";
 import type { ApprovalRecord, Artifact, AssetCategory, AssetVersion, AssetVersionDiff, ChapterHistoryItem, DeepSeekBalance, MapRunSummary, ModelProfile, ModelProfileInput, NodeAttempt, NodeDefinition, NodeSkillTemplate, ProductionCanvas, ProductionStage, ProductionStageStatus, ProductionPreflight, Project, ProjectAsset, ProjectAssetContent, ProviderCall, ProviderConnection, ProviderConnectionInput, ProviderModel, ProviderModelInput, ProviderStatus, ReferenceBook, Run, RunEvent, Skill, SkillBindingInput, SkillBundleImportPreview, StatePatchPreview, SubflowDefinition, WorkflowDocument, WorkflowFrame, WorkflowGroup, WorkflowNode, WorkflowNote, WorkflowParameter, WorkflowTemplateImportPreview, WorkflowVersion } from "./types";
@@ -88,6 +89,7 @@ function useModalBehavior(open: boolean, onClose: () => void) {
 }
 
 export default function App() {
+  const updateNodeInternals = useUpdateNodeInternals();
   const [displayMode, setDisplayMode] = useState<"simple" | "advanced">("simple");
   const [canvasLevel, setCanvasLevel] = useState<"production" | "workflow">("production");
   const [productionCanvas, setProductionCanvas] = useState<ProductionCanvas | null>(null);
@@ -138,8 +140,9 @@ export default function App() {
   const [connections, setConnections] = useState<ProviderConnection[]>([]);
   const [globalModels, setGlobalModels] = useState<ProviderModel[]>([]);
   const [approval, setApproval] = useState<ApprovalRecord | null>(null);
+  const [projectApprovals, setProjectApprovals] = useState<ApprovalRecord[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState("demo-project");
+  const [projectId, setProjectId] = useState(() => localStorage.getItem("whitebox.projectId") || "demo-project");
   const [chapterNumber, setChapterNumber] = useState(1);
   const [showProjectCreator, setShowProjectCreator] = useState(false);
   const [showDirector, setShowDirector] = useState(false);
@@ -201,13 +204,14 @@ export default function App() {
   const activeWorkflowStage = productionCanvas?.stages.find((stage) => stage.workflow_id === workflow?.id) ?? null;
   const selectedStageStatus = productionStatuses.find((status) => status.stage_id === selectedStageId) ?? null;
   const productionProjection = useMemo(() => productionCanvas && workflows.length > 0
-    ? toProductionWorkflowNodes(productionCanvas, productionWorkflows.length ? productionWorkflows : workflows, definitions, productionWorkflowByStage)
-    : null, [productionCanvas, workflows, productionWorkflows, definitions, productionWorkflowByStage]);
-  const productionNodes = (productionProjection?.nodes ?? productionFlowNodes).map((node) => ({
+    ? toProductionWorkflowNodes(productionCanvas, productionWorkflows.length ? productionWorkflows : workflows, definitions, productionWorkflowByStage, run, profiles, connections, globalModels)
+    : null, [productionCanvas, workflows, productionWorkflows, definitions, productionWorkflowByStage, run, profiles, connections, globalModels]);
+  const productionOverviewNodes = productionCanvas ? toProductionNodes(productionCanvas, productionStatuses, selectedStageId, workflows, false, run) : [];
+  const productionNodes = (displayMode === "advanced" ? productionProjection?.nodes ?? productionFlowNodes : productionOverviewNodes).map((node) => ({
     ...node,
     selected: node.type === "workflow.frame" && selectedFrameIds.includes(String(node.data.stageId ?? node.id).replace(/^stage-frame:/, "")),
   }));
-  const productionEdges = productionProjection?.edges.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId }))
+  const productionEdges = (displayMode === "advanced" ? productionProjection?.edges : undefined)?.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId }))
     ?? (productionCanvas ? toProductionEdges(productionCanvas).map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId })) : []);
   const workflowEdges = edges.map((edge) => ({ ...edge, selected: edge.id === selectedEdgeId }));
   const currentApproval = approvalForRun(run?.id ?? null, approval);
@@ -228,7 +232,8 @@ export default function App() {
       if (providerModels.status === "fulfilled") setGlobalModels(providerModels.value); else setError(readApiError(new Error(String(providerModels.reason))));
       if (projectsResult.status === "fulfilled") {
         setProjects(projectsResult.value);
-        const selected = projectsResult.value.find((item) => item.id === projectId) ?? projectsResult.value[0];
+        const rememberedProjectId = localStorage.getItem("whitebox.projectId") || projectId;
+        const selected = projectsResult.value.find((item) => item.id === rememberedProjectId) ?? projectsResult.value[0];
         if (selected) { setProjectId(selected.id); setChapterNumber(selected.current_chapter); }
       } else setError(readApiError(new Error(String(projectsResult.reason))));
       if (skillsResult.status === "fulfilled") setSkills(skillsResult.value); else setError(readApiError(new Error(String(skillsResult.reason))));
@@ -248,15 +253,18 @@ export default function App() {
     });
   }, []);
 
+  useEffect(() => { if (projects.some((project) => project.id === projectId)) localStorage.setItem("whitebox.projectId", projectId); }, [projectId, projects]);
+
   useEffect(() => {
     if (!projectId) return;
     const requestId = ++projectRequest.current;
-    Promise.all([api.getProductionCanvas(projectId), api.getProductionStatus(projectId), api.getReferenceBooks(projectId)])
-      .then(([canvas, statuses, books]) => {
+    Promise.all([api.getProductionCanvas(projectId), api.getProductionStatus(projectId), api.getReferenceBooks(projectId), api.getApprovals(projectId)])
+      .then(([canvas, statuses, books, approvals]) => {
         if (requestId !== projectRequest.current || canvas.project_id !== projectId) return;
         setProductionCanvas(canvas);
         setProductionStatuses(statuses);
         setReferenceBooks(books);
+        setProjectApprovals(approvals.filter((item) => item.status === "pending"));
         setSelectedStageId((current) => canvas.stages.some((stage) => stage.id === current)
           ? current : canvas.stages[0]?.id ?? null);
       })
@@ -302,6 +310,15 @@ export default function App() {
     const timer = window.setTimeout(() => flowInstance?.fitView({ padding: canvasLevel === "production" ? 0.12 : 0.3 }), 80);
     return () => window.clearTimeout(timer);
   }, [canvasLevel, productionCanvas?.project_id, productionCanvas?.revision, workflows.length, displayMode, flowInstance]);
+
+  useEffect(() => {
+    if (canvasLevel !== "production") return;
+    const timer = window.setTimeout(() => {
+      updateNodeInternals(productionNodes.map((node) => node.id));
+      flowInstance?.fitView({ padding: 0.12 });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [canvasLevel, displayMode, productionCanvas?.project_id, productionCanvas?.revision, productionWorkflowByStage, flowInstance, updateNodeInternals]);
 
   useEffect(() => {
     if (!productionCanvas) return;
@@ -372,6 +389,17 @@ export default function App() {
 
   function returnToProduction() {
     setWorkflowStack([]); setCanvasLevel("production"); setWorkspaceNodeId(null); setSelectedNodeId(null);
+  }
+
+  function enterStageWorkflow(stageId: string, nodeId?: string) {
+    const stage = productionCanvas?.stages.find((item) => item.id === stageId);
+    const document = workflowForStage(stageId, stage?.workflow_id ?? null, productionWorkflowByStage, workflows);
+    if (!document) { setError("该组件尚未绑定 Workflow"); return; }
+    setSelectedStageId(stageId);
+    activateWorkflow(document, true);
+    setSelectedNodeId(nodeId ?? null);
+    setCanvasLevel("workflow");
+    setShowNodeLibrary(false);
   }
 
   function returnFromWorkflow() {
@@ -477,10 +505,13 @@ export default function App() {
 
   async function arrangeProductionComponents() {
     if (!productionCanvas) return;
-    const positions = productionCanvas.stages.map((_, index) => ({ x: 60 + index * 370, y: 180 }));
+    const positions = productionCanvas.stages.map((_, index) => ({
+      x: 60 + (index % 4) * 730,
+      y: 180 + Math.floor(index / 4) * 520,
+    }));
     const next = {
       ...productionCanvas, revision: productionCanvas.revision + 1,
-      stages: productionCanvas.stages.map((stage, index) => ({ ...stage, position: positions[index] ?? { x: 80 + (index % 4) * 350, y: 840 + Math.floor(index / 4) * 320 } })),
+      stages: productionCanvas.stages.map((stage, index) => ({ ...stage, position: positions[index] })),
     };
     setProductionCanvas(next);
     try { await persistProductionCanvas(projectId, next); }
@@ -496,7 +527,7 @@ export default function App() {
       ...productionCanvas,
       revision: productionCanvas.revision + 1,
       stages: productionCanvas.stages.map((stage, index) => selectedIds.has(stage.id)
-        ? { ...stage, position: { x: 60 + index * 370, y: 180 } } : stage),
+        ? { ...stage, position: { x: 60 + (index % 4) * 730, y: 180 + Math.floor(index / 4) * 520 } } : stage),
     };
     setProductionCanvas(next);
     try { await persistProductionCanvas(projectId, next); }
@@ -1434,8 +1465,8 @@ export default function App() {
              {canvasLevel === "workflow" && <><ChevronRight size={12} /><select aria-label="当前 Workflow" className="workflow-select" value={workflow?.id ?? ""} onChange={async (event) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(event.target.value)); } catch (reason) { setError(readApiError(reason as Error)); } }}>{workflows.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></>}
           </div>
           <div className="mode-switch" aria-label="工作台模式">
-            <button className={displayMode === "simple" ? "active" : ""} onClick={() => switchDisplayMode("simple")}><Feather size={13} />简单</button>
-            <button className={displayMode === "advanced" ? "active" : ""} onClick={() => switchDisplayMode("advanced")}><Wrench size={13} />编辑</button>
+            <button className={displayMode === "simple" ? "active" : ""} onClick={() => switchDisplayMode("simple")}><Feather size={13} />{canvasLevel === "production" ? "总览" : "步骤"}</button>
+            <button className={displayMode === "advanced" ? "active" : ""} onClick={() => switchDisplayMode("advanced")}><Wrench size={13} />{canvasLevel === "production" ? "展开节点" : "节点画布"}</button>
           </div>
         </div>
         <div className="top-actions">
@@ -1463,7 +1494,8 @@ export default function App() {
            {canvasLevel === "workflow" && workflowVersions.length > 0 && <select aria-label="Workflow 版本操作" className="version-action-select" value="" onChange={async (event) => { const [action, raw] = event.target.value.split(":"); event.target.value = ""; const revision = Number(raw); if (!revision || !workflow) return; if (action === "restore") await restoreVersion(revision); else setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }}><option value="">版本操作…</option>{workflowVersions.map((version) => <><option key={`diff-${version.revision}`} value={`diff:${version.revision}`}>查看 v{version.revision} Diff</option><option key={`restore-${version.revision}`} value={`restore:${version.revision}`}>恢复为 v{version.revision}</option></>)}</select>}
            {canvasLevel === "production" && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理布局</button>}
            {canvasLevel === "production" && selectedFrameIds.length > 1 && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理已选 {selectedFrameIds.length} 个 Frame</button>}
-          {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
+           {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
+           {projectApprovals.length > 0 && <button className="approval-action-button" onClick={() => void (async () => { const pending = projectApprovals[0]; const targetRun = await api.getRun(pending.run_id, projectId); switchRun(targetRun); setApproval(pending); setSelectedStageId(null); setSelectedNodeId(null); setShowRunHistory(false); setShowAssets(false); setShowModelCenter(false); setShowNodeLibrary(false); })()}><UserCheck size={15} />待审核 {projectApprovals.length}</button>}
           <button className="mobile-model-button" aria-label="打开模型中心" onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={16} /></button>
             <button className="run-button" onClick={() => void runAction("start-run", async () => { if (canvasLevel === "production") await openProductionPreflight(); else await startRun(); })} disabled={busyActions.has("start-run") || (canvasLevel === "production" ? !productionCanvas : !workflow || ["running", "waiting_approval"].includes(run?.status ?? ""))}>
             {connections.some((item) => item.has_api_key || item.is_local) ? <Play size={16} fill="currentColor" /> : <KeyRound size={16} />}
@@ -1507,7 +1539,7 @@ export default function App() {
             onNodeDragStart={canvasLevel === "production" ? () => undefined : canvasLevel === "workflow" && displayMode === "advanced" ? onNodeDragStart : undefined}
             onNodeDragStop={canvasLevel === "production" ? saveProductionPosition : onNodeDragStop}
             onEdgesChange={canvasLevel === "workflow" && displayMode === "advanced" ? onEdgesChange : canvasLevel === "production" && displayMode === "advanced" ? (changes) => {
-              const removed = new Set(changes.filter((change) => change.type === "remove").map((change) => change.id));
+              const removed = new Set(changes.filter((change) => change.type === "remove").map((change) => change.id.replace(/^component-edge:/, "")));
               if (!removed.size || !productionCanvas) return;
               const next = { ...productionCanvas, revision: productionCanvas.revision + 1, edges: productionCanvas.edges.filter((edge) => !removed.has(edge.id)) };
               setProductionCanvas(next); void persistProductionCanvas(projectId, next).catch(() => undefined);
@@ -1555,13 +1587,13 @@ export default function App() {
                 const stage = productionCanvas?.stages.find((item) => item.id === stageId);
                 const document = productionWorkflowByStage[stageId]
                   ?? (stage?.workflow_id ? workflows.find((item) => item.id === stage.workflow_id) : null);
-                 if (document) { activateWorkflow(document, true); setSelectedStageId(stageId); setSelectedNodeId(String(node.data.childNodeId)); }
-              } else if (node.type === "production.stage") {
-                if (stageClickTimer.current) {
+                  if (document) enterStageWorkflow(stageId, String(node.data.childNodeId));
+               } else if (canvasLevel === "production" && (node.type === "production.stage" || node.type === "workflow.frame")) {
+                 if (stageClickTimer.current) {
                   window.clearTimeout(stageClickTimer.current);
                   stageClickTimer.current = null;
                 }
-                setSelectedStageId(node.id);
+                 enterStageWorkflow(String(node.data.stageId ?? node.id).replace(/^stage-frame:/, ""));
               } else if (node.type === "workflow.group" && workflow) {
                 const group = workflow.groups?.find((item) => item.id === node.id);
                 if (group) {
@@ -1601,28 +1633,6 @@ export default function App() {
             <Controls position="bottom-left" showInteractive={false} />
             <MiniMap position="bottom-right" pannable zoomable nodeColor={(node) => node.type === "production.stage" ? "#9aab72" : node.type === "workflow.note" ? "#8a7d45" : node.type === "workflow.group" ? "#4d6542" : node.type === "workflow.frame" ? "#334b5d" : "#6b7462"} maskColor="#0b0c0a99" />
            </ReactFlow>}
-           {canvasLevel === "production" && displayMode === "simple" && selectedStageWorkflow && <ProductionWorkbench
-             projectId={projectId}
-             workflow={selectedStageWorkflow}
-             stage={selectedStage}
-             definitions={definitions}
-             selectedNodeId={selectedNodeId}
-             onSelect={(nodeId) => { setSelectedNodeId(nodeId); setSelectedStageId(selectedStage?.id ?? null); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}
-           onOpen={(nodeId) => { setSelectedNodeId(nodeId); setWorkspaceNodeId(nodeId); setDebugRun(null); }}
-            onRun={() => void startSelectedStageRun()}
-              onNext={() => { const order = ["setup", "world", "characters", "story", "outline", "chapter", "post"]; const next = order[order.indexOf(selectedStage?.id ?? "") + 1]; if (next) { setSelectedStageId(next); setSelectedNodeId(null); } }}
-             onInputChange={(value) => { const inputNode = selectedStageWorkflow.nodes.find((node) => node.type === "mock.source" || node.type === "workflow.input"); if (inputNode) void updateNodeFor(inputNode.id, { [inputNode.type === "mock.source" ? "text" : "default"]: value }); }}
-             referenceBooks={referenceBooks}
-             importing={referenceImporting}
-             connections={connections}
-             globalModels={globalModels}
-             onImportBook={importReferenceBook}
-             onOpenReport={openStageReport}
-             status={selectedStageStatus}
-             run={run}
-             onMapItemRetry={retryMapItem}
-              onArtifactSelect={(artifactId) => api.getArtifact(artifactId, projectId).then(setArtifact).catch((reason: Error) => setError(readApiError(reason)))}
-           />}
           {!(canvasLevel === "workflow" && displayMode === "simple") && <div className="canvas-search"><input aria-label={canvasLevel === "production" ? "定位 Workflow 组件" : "定位节点"} value={nodeSearch} onChange={(event) => setNodeSearch(event.target.value)} placeholder={canvasLevel === "production" ? "定位 Workflow 组件…" : "定位节点…"} />{nodeSearch && <div>{(canvasLevel === "production" ? productionNodes : nodes).filter((node) => `${node.id} ${String(node.data.label ?? node.data.title ?? "")} ${node.type}`.toLowerCase().includes(nodeSearch.toLowerCase())).slice(0, 8).map((node) => <button key={node.id} onClick={() => { flowInstance?.fitView({ nodes: [{ id: node.id }], duration: 350, padding: 0.7 }); setNodeSearch(""); }}><b>{String(node.data.label ?? node.data.title ?? node.id)}</b><code>{node.id}</code></button>)}</div>}</div>}
           <div className={`run-strip status-${run?.status ?? "idle"}`}>
             <span className="pulse-dot" />
@@ -1641,7 +1651,7 @@ export default function App() {
            {error && <div className="error-box" role="alert">{error}</div>}
            {workflowNotice && <div className="success-notice" role="status">{workflowNotice}<button aria-label="关闭提示" onClick={() => setWorkflowNotice(null)}><X size={13} /></button></div>}
 
-             {showRunHistory ? <RunHistoryPanel runs={runHistory} activeRunId={run?.id ?? null} onSelect={async (runId) => { try { switchRun(await api.getRun(runId, projectId)); setShowRunHistory(false); } catch (reason) { setError(readApiError(reason as Error)); } }} /> : showWorkflowManager ? <WorkflowManager workflow={workflow} workflows={workflows} versions={workflowVersions} productionCanvas={productionCanvas} dirty={workflowDirty} onSelect={async (id) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(id)); } catch (reason) { setError(readApiError(reason as Error)); } }} onNew={createStandaloneWorkflow} onSave={async () => { try { return await saveWorkflow(); } catch { return null; } }} onSaveAs={saveWorkflowAsProjectCopy} onRename={renameCurrentWorkflow} onPublish={publishWorkflowVersion} onDiff={async (revision) => { if (!workflow) return; setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }} onRestore={restoreVersion} /> : canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary && !selectedWorkflowNode ? (
+             {showRunHistory ? <RunHistoryPanel runs={runHistory} activeRunId={run?.id ?? null} onSelect={async (runId) => { try { switchRun(await api.getRun(runId, projectId)); setShowRunHistory(false); } catch (reason) { setError(readApiError(reason as Error)); } }} /> : showWorkflowManager ? <WorkflowManager workflow={workflow} workflows={workflows} versions={workflowVersions} productionCanvas={productionCanvas} dirty={workflowDirty} onSelect={async (id) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(id)); } catch (reason) { setError(readApiError(reason as Error)); } }} onNew={createStandaloneWorkflow} onSave={async () => { try { return await saveWorkflow(); } catch { return null; } }} onSaveAs={saveWorkflowAsProjectCopy} onRename={renameCurrentWorkflow} onPublish={publishWorkflowVersion} onDiff={async (revision) => { if (!workflow) return; setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }} onRestore={restoreVersion} /> : canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary && !selectedWorkflowNode && selectedStage ? (
             <ProductionStageInspector stage={selectedStage} status={selectedStageStatus} workflows={workflows} referenceBooks={referenceBooks} connections={connections} globalModels={globalModels} importing={referenceImporting} fileError={referenceFileError} onFileError={setReferenceFileError} onBind={bindStageWorkflow} onParameters={updateStageParameters} onDelete={deleteWorkflowComponent} onImportBook={async (input) => { await importReferenceBook(input); setReferenceBooks(await api.getReferenceBooks(projectId)); }} onOpenReport={openStageReport} />
           ) : showNodeLibrary ? (
             canvasLevel === "production" ? <WorkflowLibrary workflows={workflows} onCreate={createWorkflowComponent} /> : <NodeLibrary definitions={definitions} subflows={subflows} simple={displayMode === "simple"} onCreate={createNode} onInsertSubflow={insertSubflow} onCreateNote={createNote} onCreateFrame={createFrame} />
@@ -1749,7 +1759,8 @@ export default function App() {
               <RunInspector run={run} projectId={projectId} events={events} approval={currentApproval} componentNames={Object.fromEntries((productionCanvas?.stages ?? []).map((stage) => [stage.id, stage.title]))} onSelectNode={focusRunNode} onCancel={cancelRun} onOpenAssets={(category) => { setShowAssets(true); setShowRunHistory(false); setShowModelCenter(false); setShowNodeLibrary(false); setSelectedNodeId(null); if (category === "proposals") setWorkflowNotice("请在项目资产的“提案”分类中查看并应用状态变更。"); }} onDecideApproval={async (decision, note) => {
                 if (!currentApproval || !run) return;
                 await api.decideApproval(currentApproval.id, decision, note);
-               setApproval(null);
+                setApproval(null);
+                setProjectApprovals((current) => current.filter((item) => item.id !== currentApproval.id));
                setRun(await api.getRun(run.id, projectId));
                setProductionStatuses(await api.getProductionStatus(projectId));
                setRunHistory(await api.getRuns(projectId));
@@ -2087,7 +2098,7 @@ function NodeLibrary({ definitions, subflows, simple, onCreate, onInsertSubflow,
   onCreateFrame: () => void;
 }) {
   const [search, setSearch] = useState("");
-  const simpleTypes = new Set(["ai.prompt_call", "ai.agent_task"]);
+  const simpleTypes = new Set(["ai.prompt_call", "ai.agent_task", "core.approval", "writing.quality_gate", "flow.split", "flow.join"]);
   const filtered = definitions.filter((definition) => (!simple || simpleTypes.has(definition.type)) &&
     `${definition.title} ${definition.description} ${definition.category} ${definition.type}`
       .toLowerCase().includes(search.toLowerCase()),
