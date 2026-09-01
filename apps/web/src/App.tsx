@@ -63,7 +63,8 @@ export default function App() {
   const [productionCanvas, setProductionCanvas] = useState<ProductionCanvas | null>(null);
   const [productionStatuses, setProductionStatuses] = useState<ProductionStageStatus[]>([]);
   const [productionFlowNodes, setProductionFlowNodes] = useState<Node[]>([]);
-  const [selectedStageId, setSelectedStageId] = useState<string | null>("chapter");
+  // Start new users at the book-level brief instead of dropping them into chapter mechanics.
+  const [selectedStageId, setSelectedStageId] = useState<string | null>("setup");
   const [selectedFrameIds, setSelectedFrameIds] = useState<string[]>([]);
   const [workspaceNodeId, setWorkspaceNodeId] = useState<string | null>(null);
   const [debugRun, setDebugRun] = useState<Run | null>(null);
@@ -99,6 +100,7 @@ export default function App() {
   const [definitions, setDefinitions] = useState<NodeDefinition[]>([]);
   const [providerCalls, setProviderCalls] = useState<ProviderCall[]>([]);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [runtimeVersion, setRuntimeVersion] = useState("0.3.1");
   const [streamText, setStreamText] = useState<Record<string, string>>({});
   const [showModelCenter, setShowModelCenter] = useState(false);
   const [balance, setBalance] = useState<DeepSeekBalance | null>(null);
@@ -110,11 +112,20 @@ export default function App() {
   const [projectId, setProjectId] = useState("demo-project");
   const [chapterNumber, setChapterNumber] = useState(1);
   const [showProjectCreator, setShowProjectCreator] = useState(false);
+  const [showDirector, setShowDirector] = useState(false);
+  const [directorIdea, setDirectorIdea] = useState("");
+  const [directorCandidates, setDirectorCandidates] = useState<Array<Record<string, unknown>>>([]);
+  const [selectedDirectorCandidate, setSelectedDirectorCandidate] = useState<Record<string, unknown> | null>(null);
   const [showAssets, setShowAssets] = useState(false);
   const [showNodeLibrary, setShowNodeLibrary] = useState(false);
   const [showWorkflowManager, setShowWorkflowManager] = useState(false);
+  const [showRunHistory, setShowRunHistory] = useState(false);
+  const [runHistory, setRunHistory] = useState<Run[]>([]);
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectSlug, setNewProjectSlug] = useState("");
+  const [newProjectBrief, setNewProjectBrief] = useState("");
+  const [newProjectGenre, setNewProjectGenre] = useState("悬疑");
+  const [projectBundle, setProjectBundle] = useState<Record<string, unknown> | null>(null);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [skillTemplates, setSkillTemplates] = useState<NodeSkillTemplate[]>([]);
   const [subflows, setSubflows] = useState<SubflowDefinition[]>([]);
@@ -175,6 +186,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch("/api/runtime-info").then((response) => response.json() as Promise<{ version?: string }>).then((info) => { if (info.version) setRuntimeVersion(info.version); }).catch(() => undefined);
     Promise.allSettled([
       api.getNodeDefinitions(), api.getDeepSeekStatus(), api.getModelProfiles(),
       api.getProviderConnections(), api.getProviderModels(), api.getProjects(),
@@ -220,6 +232,11 @@ export default function App() {
       })
       .catch((reason: Error) => setError(readApiError(reason)));
   }, [projectId]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    api.getRuns(projectId).then(setRunHistory).catch(() => setRunHistory([]));
+  }, [projectId, run?.id, run?.status]);
 
   useEffect(() => {
     if (!productionCanvas || !workflows.length) {
@@ -576,6 +593,13 @@ export default function App() {
   }, [run?.id, run?.status, projectId]);
 
   useEffect(() => {
+    if (!run || typeof Notification === "undefined" || Notification.permission !== "granted") return;
+    if (["succeeded", "failed", "waiting_approval"].includes(run.status)) {
+      new Notification("Whitebox Writing Lab", { body: run.status === "succeeded" ? "运行已完成" : run.status === "failed" ? "运行失败，可以从断点恢复" : "运行正在等待人工审批" });
+    }
+  }, [run?.id, run?.status]);
+
+  useEffect(() => {
     if (!run || ["succeeded", "failed", "cancelled"].includes(run.status)) return;
     const runId = run.id;
     let active = true;
@@ -617,7 +641,7 @@ export default function App() {
       setArtifact(null);
       return;
     }
-    api.getArtifact(selectedNodeRun.output_artifact_id).then(setArtifact).catch((reason: Error) => setError(reason.message));
+     api.getArtifact(selectedNodeRun.output_artifact_id, projectId).then(setArtifact).catch((reason: Error) => setError(reason.message));
   }, [selectedNodeRun?.output_artifact_id]);
 
   useEffect(() => {
@@ -1166,10 +1190,28 @@ export default function App() {
       const document = workflow?.id === selectedStage.workflow_id
         ? workflow : await api.getWorkflow(selectedStage.workflow_id);
       await startWorkflowRun(document);
-      setProductionStatuses(await api.getProductionStatus(projectId));
+      const statuses = await api.getProductionStatus(projectId);
+      setProductionStatuses(statuses);
+      const stageOrder = ["setup", "world", "characters", "story", "outline", "chapter", "post"];
+      const nextStageId = stageOrder[stageOrder.indexOf(selectedStage.id) + 1];
+      if (nextStageId) setWorkflowNotice(`当前阶段已提交。完成后可继续：${productionCanvas?.stages.find((stage) => stage.id === nextStageId)?.title ?? "下一阶段"}`);
     } catch (reason) {
       setError(readApiError(reason as Error));
     }
+  }
+
+  async function createStandaloneWorkflow() {
+    const name = window.prompt("新工作流名称", "未命名工作流");
+    if (!name?.trim()) return;
+    try {
+      const created = await api.createBlankWorkflow(name.trim(), false);
+      setWorkflows((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+      activateWorkflow(created);
+      setCanvasLevel("workflow");
+      setShowWorkflowManager(false);
+      setShowNodeLibrary(false);
+      setWorkflowNotice("已创建空白工作流。请从节点库添加第一个节点。");
+    } catch (reason) { setError(readApiError(reason as Error)); }
   }
 
   async function startProductionRun(scope: "all" | "current_downstream" = "all", stageId?: string, allowSideEffects = false) {
@@ -1242,7 +1284,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark"><Braces size={22} /></div>
-          <div><strong>WHITEBOX</strong><span>WRITING LAB / M1</span></div>
+           <div><strong>WHITEBOX</strong><span>WRITING LAB / {runtimeVersion}</span></div>
         </div>
         <div className="workflow-title mode-title">
           <div className="view-breadcrumb">
@@ -1265,8 +1307,10 @@ export default function App() {
             if (selected) setChapterNumber(selected.current_chapter);
           }}>{projects.map((project) => <option key={project.id} value={project.id}>{project.title}</option>)}</select>
            <label className="chapter-control">第 <input aria-label="章节号" type="number" min="1" value={chapterNumber} onChange={(event) => setChapterNumber(Math.max(1, Number(event.target.value)))} /> 章</label>
-           <button className="ghost-button" onClick={() => setShowProjectCreator(true)}>新建项目</button>
-           <button className="ghost-button" onClick={() => { setShowWorkflowManager(true); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}>工作流管理</button>
+            <button className="ghost-button" onClick={() => setShowProjectCreator(true)}>新建项目</button>
+            <button className="ghost-button" onClick={() => setShowDirector(true)}>自动导演开书</button>
+            <button className="ghost-button" onClick={() => { setShowWorkflowManager(true); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}>工作流管理</button>
+            <button className="ghost-button" onClick={() => void createStandaloneWorkflow()}>新建工作流</button>
            {canvasLevel === "workflow" && workflow && <button className="ghost-button" onClick={() => void renameCurrentWorkflow()}>重命名 Workflow</button>}
            {workflowDirty && <button className="ghost-button save-draft-button" onClick={saveWorkflow} disabled={!workflow || saving}>
              {saving ? <Clock3 size={16} /> : <Save size={16} />} {saving ? "保存中" : "保存草稿"}
@@ -1280,10 +1324,11 @@ export default function App() {
            {canvasLevel === "production" && selectedFrameIds.length > 1 && <button className="ghost-button arrange-button" onClick={arrangeSelectedFrames}>整理已选 {selectedFrameIds.length} 个 Frame</button>}
           {selectedEdgeId && <button className="delete-edge-button" onClick={deleteSelectedEdge}><Trash2 size={14} />删除连线</button>}
           <button className="mobile-model-button" aria-label="打开模型中心" onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={16} /></button>
-          <button className="run-button" onClick={() => canvasLevel === "production" ? openProductionPreflight() : startRun()} disabled={canvasLevel === "production" ? !productionCanvas : !workflow || ["running", "waiting_approval"].includes(run?.status ?? "")}>
+           <button className="run-button" onClick={() => canvasLevel === "production" ? openProductionPreflight() : startRun()} disabled={canvasLevel === "production" ? !productionCanvas : !workflow || ["running", "waiting_approval"].includes(run?.status ?? "")}>
             {connections.some((item) => item.has_api_key || item.is_local) ? <Play size={16} fill="currentColor" /> : <KeyRound size={16} />}
             {run?.status === "running" ? "运行中" : run?.status === "waiting_approval" ? "等待审批" : connections.some((item) => item.has_api_key || item.is_local) ? canvasLevel === "production" ? "运行作品流程" : "运行工作流" : "全局设置"}
-          </button>
+           </button>
+           {run && ["failed", "cancelled", "interrupted"].includes(run.status) && <button className="ghost-button" onClick={async () => { try { await api.resumeRun(run.id); setRun(await api.getRun(run.id)); } catch (reason) { setError(readApiError(reason as Error)); } }}><RefreshCw size={14} />恢复运行</button>}
         </div>
       </header>
 
@@ -1291,10 +1336,10 @@ export default function App() {
         <aside className="rail">
           <button className="rail-item active"><Box size={18} /><span>画布</span></button>
           <button className={`rail-item ${showNodeLibrary ? "active" : ""}`} onClick={() => { setShowNodeLibrary(true); setShowAssets(false); setShowModelCenter(false); setSelectedNodeId(null); }}><Braces size={18} /><span>{canvasLevel === "production" ? "组件" : "节点"}</span></button>
-          <button className="rail-item"><Clock3 size={18} /><span>运行</span></button>
+           <button className={`rail-item ${showRunHistory ? "active" : ""}`} onClick={() => { setShowRunHistory(true); setShowAssets(false); setShowModelCenter(false); setShowNodeLibrary(false); setShowWorkflowManager(false); }}><Clock3 size={18} /><span>运行</span></button>
           <button className={`rail-item ${showAssets ? "active" : ""}`} onClick={() => { setShowAssets(true); setShowModelCenter(false); setSelectedNodeId(null); }}><Database size={18} /><span>产物</span></button>
           <button className={`rail-item ${showModelCenter ? "active" : ""}`} onClick={() => { setShowModelCenter(true); setShowAssets(false); setSelectedNodeId(null); }}><KeyRound size={18} /><span>设置</span></button>
-          <div className="rail-version">0.2<br />M1</div>
+           <div className="rail-version">{runtimeVersion}<br />LOCAL</div>
         </aside>
 
         <div className="canvas-wrap">
@@ -1331,11 +1376,12 @@ export default function App() {
             onNodeClick={(_, node) => {
               setSelectedEdgeId(null);
               setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false);
-              if (canvasLevel === "production" && node.data?.childNodeId && node.data?.stageId) {
-                const stageId = String(node.data.stageId);
-                const childNodeId = String(node.data.childNodeId);
-                const childWorkflow = productionCanvas?.stages.find((stage) => stage.id === stageId)?.workflow_id;
-                const document = workflows.find((item) => item.id === childWorkflow);
+               if (canvasLevel === "production" && node.data?.childNodeId && node.data?.stageId) {
+                 const stageId = String(node.data.stageId);
+                 const childNodeId = String(node.data.childNodeId);
+                 const stage = productionCanvas?.stages.find((item) => item.id === stageId);
+                 const document = productionWorkflowByStage[stageId]
+                   ?? (stage?.workflow_id ? workflows.find((item) => item.id === stage.workflow_id) : null);
                 if (document) setWorkflow(document);
                 setSelectedStageId(stageId);
                 setSelectedNodeId(childNodeId);
@@ -1365,7 +1411,9 @@ export default function App() {
             onNodeDoubleClick={(_, node) => {
               if (canvasLevel === "production" && node.data?.childNodeId && node.data?.stageId) {
                 const stageId = String(node.data.stageId);
-                const document = workflows.find((item) => item.id === productionCanvas?.stages.find((stage) => stage.id === stageId)?.workflow_id);
+                const stage = productionCanvas?.stages.find((item) => item.id === stageId);
+                const document = productionWorkflowByStage[stageId]
+                  ?? (stage?.workflow_id ? workflows.find((item) => item.id === stage.workflow_id) : null);
                 if (document) { setWorkflow(document); setSelectedStageId(stageId); setSelectedNodeId(String(node.data.childNodeId)); }
               } else if (node.type === "production.stage") {
                 if (stageClickTimer.current) {
@@ -1419,7 +1467,8 @@ export default function App() {
              selectedNodeId={selectedNodeId}
              onSelect={(nodeId) => { setSelectedNodeId(nodeId); setSelectedStageId(selectedStage?.id ?? null); setShowNodeLibrary(false); setShowAssets(false); setShowModelCenter(false); }}
            onOpen={(nodeId) => { setSelectedNodeId(nodeId); setWorkspaceNodeId(nodeId); setDebugRun(null); }}
-           onRun={() => void startSelectedStageRun()}
+            onRun={() => void startSelectedStageRun()}
+              onNext={() => { const order = ["setup", "world", "characters", "story", "outline", "chapter", "post"]; const next = order[order.indexOf(selectedStage?.id ?? "") + 1]; if (next) { setSelectedStageId(next); setSelectedNodeId(null); } }}
              onInputChange={(value) => { const inputNode = selectedStageWorkflow.nodes.find((node) => node.type === "mock.source" || node.type === "workflow.input"); if (inputNode) void updateNodeFor(inputNode.id, { [inputNode.type === "mock.source" ? "text" : "default"]: value }); }}
              referenceBooks={referenceBooks}
              importing={referenceImporting}
@@ -1444,20 +1493,21 @@ export default function App() {
         <aside className="inspector">
           <div className="inspector-head">
             <div><small>INSPECTOR</small><h2>{canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary ? selectedStage ? "Workflow 组件" : "作品流程" : showNodeLibrary ? canvasLevel === "production" ? "Workflow 库" : "节点库" : showAssets ? "项目资产" : showModelCenter ? "全局设置" : selectedNote ? "Markdown 注释" : selectedFrame ? "Frame" : selectedGroup ? "节点组" : selectedWorkflowNode ? "节点配置" : "运行透视"}</h2></div>
-             {(selectedWorkflowNode || selectedGroup || selectedNote || selectedFrame || showModelCenter || showAssets || showNodeLibrary || showWorkflowManager) && <button aria-label="关闭检查器" onClick={() => { setSelectedNodeId(null); setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null); setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false); setShowWorkflowManager(false); }}><X size={17} /></button>}
+              {(selectedWorkflowNode || selectedGroup || selectedNote || selectedFrame || showModelCenter || showAssets || showNodeLibrary || showWorkflowManager || showRunHistory) && <button aria-label="关闭检查器" onClick={() => { setSelectedNodeId(null); setSelectedGroupId(null); setSelectedNoteId(null); setSelectedFrameId(null); setShowModelCenter(false); setShowAssets(false); setShowNodeLibrary(false); setShowWorkflowManager(false); setShowRunHistory(false); }}><X size={17} /></button>}
           </div>
 
            {error && <div className="error-box" role="alert">{error}</div>}
            {workflowNotice && <div className="success-notice" role="status">{workflowNotice}<button aria-label="关闭提示" onClick={() => setWorkflowNotice(null)}><X size={13} /></button></div>}
 
-            {showWorkflowManager ? <WorkflowManager workflow={workflow} workflows={workflows} versions={workflowVersions} productionCanvas={productionCanvas} dirty={workflowDirty} onSelect={async (id) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(id)); } catch (reason) { setError(readApiError(reason as Error)); } }} onSave={saveWorkflow} onSaveAs={saveWorkflowAsProjectCopy} onRename={renameCurrentWorkflow} onPublish={publishWorkflowVersion} onDiff={async (revision) => { if (!workflow) return; setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }} onRestore={restoreVersion} /> : canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary && !selectedWorkflowNode ? (
+             {showRunHistory ? <RunHistoryPanel runs={runHistory} activeRunId={run?.id ?? null} onSelect={async (runId) => { try { setRun(await api.getRun(runId)); setShowRunHistory(false); } catch (reason) { setError(readApiError(reason as Error)); } }} /> : showWorkflowManager ? <WorkflowManager workflow={workflow} workflows={workflows} versions={workflowVersions} productionCanvas={productionCanvas} dirty={workflowDirty} onSelect={async (id) => { if (workflowDirty && !window.confirm("当前 Workflow 有未保存修改，仍要切换吗？")) return; try { activateWorkflow(await api.getWorkflow(id)); } catch (reason) { setError(readApiError(reason as Error)); } }} onNew={createStandaloneWorkflow} onSave={saveWorkflow} onSaveAs={saveWorkflowAsProjectCopy} onRename={renameCurrentWorkflow} onPublish={publishWorkflowVersion} onDiff={async (revision) => { if (!workflow) return; setWorkflowDiff((await api.getWorkflowVersionDiff(workflow.id, revision)).unified_diff); }} onRestore={restoreVersion} /> : canvasLevel === "production" && !showAssets && !showModelCenter && !showNodeLibrary && !selectedWorkflowNode ? (
             <ProductionStageInspector stage={selectedStage} status={selectedStageStatus} workflows={workflows} referenceBooks={referenceBooks} connections={connections} globalModels={globalModels} importing={referenceImporting} fileError={referenceFileError} onFileError={setReferenceFileError} onBind={bindStageWorkflow} onParameters={updateStageParameters} onDelete={deleteWorkflowComponent} onImportBook={async (input) => { await importReferenceBook(input); setReferenceBooks(await api.getReferenceBooks(projectId)); }} onOpenReport={openStageReport} />
           ) : showNodeLibrary ? (
             canvasLevel === "production" ? <WorkflowLibrary workflows={workflows} onCreate={createWorkflowComponent} /> : <NodeLibrary definitions={definitions} subflows={subflows} simple={displayMode === "simple"} onCreate={createNode} onInsertSubflow={insertSubflow} onCreateNote={createNote} onCreateFrame={createFrame} />
           ) : showAssets ? (
             <AssetsPanel projectId={projectId} />
           ) : showModelCenter ? (
-            <ModelCenter
+             <ModelCenter
+               projectId={projectId}
               status={providerStatus}
               balance={balance}
               onStatus={setProviderStatus}
@@ -1473,8 +1523,16 @@ export default function App() {
               onSkills={setSkills}
               skillTemplates={skillTemplates}
               onSkillTemplates={setSkillTemplates}
-              currentWorkflow={workflow}
-              onWorkflowCreated={(created) => {
+               currentWorkflow={workflow}
+               onPromptApply={async (promptId, content) => {
+                 const target = workflow?.nodes.find((node) => node.config.prompt_id === promptId || node.config.instruction_prompt_id === promptId);
+                 if (!target) { setError("当前 Workflow 没有引用这个官方 Prompt，请先打开官方流程或手动绑定 prompt_id。"); return; }
+                 const isSystemPrompt = promptId.endsWith(".system");
+                 const isInstructionPrompt = promptId.endsWith(".instruction");
+                 const configKey = isSystemPrompt ? "system_prompt" : isInstructionPrompt ? "instruction" : "user_prompt";
+                 await updateNodeFor(target.id, { [configKey]: content });
+               }}
+               onWorkflowCreated={(created) => {
                 setWorkflows((current) => [created, ...current.filter((item) => item.id !== created.id)]);
                 activateWorkflow(created);
                 setShowModelCenter(false);
@@ -1545,12 +1603,14 @@ export default function App() {
               onDuplicate={duplicateSelectedNode}
             />
           ) : (
-            <RunInspector run={run} events={events} approval={approval} componentNames={Object.fromEntries((productionCanvas?.stages ?? []).map((stage) => [stage.id, stage.title]))} onSelectNode={focusRunNode} onCancel={cancelRun} onDecideApproval={async (decision, note) => {
-              if (!approval || !run) return;
-              await api.decideApproval(approval.id, decision, note);
-              setApproval(null);
-              setRun(await api.getRun(run.id));
-            }} />
+             <RunInspector run={run} events={events} approval={approval} componentNames={Object.fromEntries((productionCanvas?.stages ?? []).map((stage) => [stage.id, stage.title]))} onSelectNode={focusRunNode} onCancel={cancelRun} onOpenAssets={(category) => { setShowAssets(true); setShowRunHistory(false); setShowModelCenter(false); setShowNodeLibrary(false); setSelectedNodeId(null); if (category === "proposals") setWorkflowNotice("请在项目资产的“提案”分类中查看并应用状态变更。"); }} onDecideApproval={async (decision, note) => {
+               if (!approval || !run) return;
+               await api.decideApproval(approval.id, decision, note);
+               setApproval(null);
+               setRun(await api.getRun(run.id));
+               setProductionStatuses(await api.getProductionStatus(projectId));
+               setRunHistory(await api.getRuns(projectId));
+             }} />
           )}
         </aside>
        </section>
@@ -1565,18 +1625,22 @@ export default function App() {
             }} />
             <label className="field-label">目录标识</label>
             <input value={newProjectSlug} onChange={(event) => setNewProjectSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} placeholder="my-novel" />
-            <p>项目将创建在本地受管目录，并初始化 manuscript、world、characters、outline、state。</p>
+             <label className="field-label">创作简报（可选）</label><textarea value={newProjectBrief} onChange={(event) => setNewProjectBrief(event.target.value)} placeholder="一句话灵感、题材偏好、主角和你想写出的读者感受" />
+             <label className="field-label">题材</label><select value={newProjectGenre} onChange={(event) => setNewProjectGenre(event.target.value)}><option>悬疑</option><option>玄幻</option><option>都市</option><option>科幻</option><option>言情</option></select>
+             <label className="field-label">导入 Whitebox 项目 Bundle（可选）</label><input type="file" accept=".json,application/json" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { setProjectBundle(JSON.parse(await file.text()) as Record<string, unknown>); } catch { setError("项目 Bundle 不是有效 JSON"); } }} />
+             <p>项目将创建在本地受管目录，并初始化 manuscript、world、characters、outline、state。创作简报会保存为项目资产，作为后续官方流程的长期输入。</p>
             <div className="policy-modal-actions"><button onClick={() => setShowProjectCreator(false)}>取消</button><button className="confirm" disabled={!newProjectTitle.trim() || !newProjectSlug} onClick={async () => {
               try {
-                const created = await api.createProject(newProjectTitle.trim(), newProjectSlug);
-                const items = await api.getProjects();
+                 const created = projectBundle ? (await api.importProject(newProjectTitle.trim(), newProjectSlug, projectBundle)).project : await api.createProject(newProjectTitle.trim(), newProjectSlug, newProjectBrief.trim(), newProjectGenre);
+                 const items = await api.getProjects();
                 setProjects(items); setProjectId(created.id); setChapterNumber(1);
-                setShowProjectCreator(false); setNewProjectTitle(""); setNewProjectSlug("");
+                 setShowProjectCreator(false); setNewProjectTitle(""); setNewProjectSlug(""); setNewProjectBrief(""); setProjectBundle(null);
               } catch (reason) { setError(readApiError(reason as Error)); }
             }}>创建项目</button></div>
           </div>
         </div>
       )}
+      {showDirector && <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="自动导演开书"><div className="policy-modal director-modal"><small>AUTO DIRECTOR</small><h2>从一句灵感开始</h2><p>先生成多个方向候选，确认后再创建项目和官方生产画布。</p><textarea value={directorIdea} onChange={(event) => setDirectorIdea(event.target.value)} placeholder="例如：失忆剑客在旧戏楼醒来，发现另一个自己正在追杀他" />{directorCandidates.length === 0 ? <button className="primary-panel-button" disabled={!directorIdea.trim()} onClick={async () => { try { const result = await api.generateDirectorCandidates(directorIdea.trim()); setDirectorCandidates(result.candidates); } catch (reason) { setError(readApiError(reason as Error)); } }}>生成方向候选</button> : <><div className="director-candidate-list">{directorCandidates.map((candidate) => <button key={String(candidate.id)} className={selectedDirectorCandidate?.id === candidate.id ? "active" : ""} onClick={() => setSelectedDirectorCandidate(candidate)}><b>{String(candidate.title_hint)}</b><span>{String(candidate.promise)}</span><small>{String(candidate.engine)}</small></button>)}</div><div className="policy-modal-actions"><button onClick={() => { setDirectorCandidates([]); setSelectedDirectorCandidate(null); }}>重新生成</button><button className="confirm" disabled={!selectedDirectorCandidate} onClick={async () => { if (!selectedDirectorCandidate) return; const title = String(selectedDirectorCandidate.title_hint || "未命名小说"); try { const result = await api.confirmDirectorCandidate(title, slugify(title), selectedDirectorCandidate); setProjects((current) => [result.project, ...current]); setProjectId(result.project.id); setChapterNumber(1); setShowDirector(false); setDirectorIdea(""); setDirectorCandidates([]); setSelectedDirectorCandidate(null); } catch (reason) { setError(readApiError(reason as Error)); } }}>确认方向并创建项目</button></div></>}</div></div>}
       {workspaceNode && <ExecutionNodeWorkspace
         node={workspaceNode}
         definition={definitions.find((item) => item.type === workspaceNode.type) ?? null}
@@ -1633,13 +1697,30 @@ function ProductionPreflightModal({ preflight, stageId, onClose, onScopeChange, 
   return <div className="policy-modal-backdrop" role="dialog" aria-modal="true" aria-label="运行作品流程预检"><div className="policy-modal production-preflight"><small>PRODUCTION PREFLIGHT</small><h2>确认运行作品流程</h2><p>先选择执行范围。确认后才会创建统一 Production Run。</p><div className="preflight-scope"><label><input type="radio" checked={scope === "all"} onChange={() => selectScope("all")} />运行全部已配置组件</label><label><input type="radio" disabled={!stageId} checked={scope === "current_downstream"} onChange={() => selectScope("current_downstream")} />从当前组件运行到下游</label></div><div className="preflight-facts"><div><b>{preflight.components.length}</b><span>组件</span></div><div><b>{preflight.node_count}</b><span>内部节点</span></div><div><b>{preflight.model_calls}</b><span>模型调用</span></div><div><b>{preflight.approval_nodes}</b><span>人工审批</span></div><div><b>{preflight.side_effects}</b><span>副作用节点</span></div></div><section className="preflight-components">{preflight.components.map((component) => <div key={component.stage_id}><span className={component.configured ? "stage-status-dot" : "stage-status-dot missing"} /><b>{component.title}</b><small>{component.configured ? `${component.node_count} 个内部节点` : "未配置 Workflow"}</small></div>)}</section>{preflight.side_effects > 0 && <label className="preflight-side-effect"><input type="checkbox" checked={allowSideEffects} onChange={(event) => toggleSideEffects(event.target.checked)} />我明确允许本次运行执行文件写入等副作用</label>}{preflight.errors.length > 0 && <div className="preflight-errors">{preflight.errors.map((error) => <p key={error}>{error}</p>)}</div>}<div className="policy-modal-actions"><button onClick={onClose}>取消</button><button className="confirm" disabled={!preflight.valid} onClick={() => void onConfirm(scope, allowSideEffects)}>确认并运行</button></div></div></div>;
 }
 
-function WorkflowManager({ workflow, workflows, versions, productionCanvas, dirty, onSelect, onSave, onSaveAs, onRename, onPublish, onDiff, onRestore }: {
+function RunHistoryPanel({ runs, activeRunId, onSelect }: { runs: Run[]; activeRunId: string | null; onSelect: (runId: string) => Promise<void> }) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [comparison, setComparison] = useState<Awaited<ReturnType<typeof api.compareRuns>> | null>(null);
+  const statusLabel: Record<string, string> = {
+    succeeded: "已完成", failed: "失败", running: "运行中", waiting_approval: "等待审批",
+    cancelled: "已取消", pending: "排队中", rejected: "已驳回",
+  };
+  return <div className="inspector-body run-history-panel">
+    <section className="workflow-manager-hero"><small>RUN HISTORY</small><h2>运行历史</h2><p>查看当前项目的执行快照。点击一条运行记录可恢复节点状态和 Artifact 透视。</p></section>
+    <section><div className="section-label">RECENT RUNS</div><div className="run-history-filters"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索 Workflow 或 Run ID" /><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">全部状态</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>{compareIds.length === 2 && <button className="primary-panel-button" onClick={() => void api.compareRuns(compareIds[0], compareIds[1]).then(setComparison)}>比较已选 Run</button>}{runs.length === 0 ? <p className="empty-note">当前项目还没有运行记录。</p> : <div className="run-history-list">{runs.filter((item) => (statusFilter === "all" || item.status === statusFilter) && `${item.id} ${item.workflow_id}`.toLowerCase().includes(query.toLowerCase())).map((item) => <div className="run-history-row" key={item.id}><input type="checkbox" aria-label={`选择 Run ${item.id.slice(0, 8)} 进行比较`} checked={compareIds.includes(item.id)} onChange={(event) => setCompareIds((current) => event.target.checked ? [...current.filter((id) => id !== item.id).slice(-1), item.id] : current.filter((id) => id !== item.id))} /><button className={item.id === activeRunId ? "active" : ""} onClick={() => void onSelect(item.id)}><span><b>{item.workflow_id.startsWith("production:") ? "作品流程" : item.workflow_id}</b><small>{new Date(item.created_at).toLocaleString()} · {item.node_runs.length} 个节点 · {item.id.slice(0, 8)}</small></span><code>{statusLabel[item.status] ?? item.status}</code></button></div>)}</div>}</section>
+    {comparison && <section><div className="section-label">RUN COMPARISON</div><p className="section-help">{comparison.same_graph ? "相同执行图" : "执行图不同"} · {comparison.left_status} → {comparison.right_status}</p><div className="run-comparison-list">{comparison.nodes.map((node) => <div key={node.node_id}><b>{node.node_id}</b><span>{node.left_status ?? "-"} / {node.left_attempt ?? 0}</span><span>{node.right_status ?? "-"} / {node.right_attempt ?? 0}</span></div>)}</div></section>}
+  </div>;
+}
+
+function WorkflowManager({ workflow, workflows, versions, productionCanvas, dirty, onSelect, onNew, onSave, onSaveAs, onRename, onPublish, onDiff, onRestore }: {
   workflow: WorkflowDocument | null;
   workflows: WorkflowDocument[];
   versions: WorkflowVersion[];
   productionCanvas: ProductionCanvas | null;
   dirty: boolean;
   onSelect: (id: string) => Promise<void>;
+  onNew: () => Promise<void>;
   onSave: () => Promise<void>;
   onSaveAs: () => Promise<void>;
   onRename: () => Promise<void>;
@@ -1735,7 +1816,7 @@ function BookWorkbenchControls({ referenceBooks, importing, connections, globalM
   </div>;
 }
 
-function ProductionWorkbench({ workflow, stage, definitions, selectedNodeId, onSelect, onOpen, onRun, onInputChange, referenceBooks, importing, connections, globalModels, onImportBook, onOpenReport, status, run, onMapItemRetry, onArtifactSelect }: {
+function ProductionWorkbench({ workflow, stage, definitions, selectedNodeId, onSelect, onOpen, onRun, onNext, onInputChange, referenceBooks, importing, connections, globalModels, onImportBook, onOpenReport, status, run, onMapItemRetry, onArtifactSelect }: {
   workflow: WorkflowDocument;
   stage: ProductionStage | null;
   definitions: NodeDefinition[];
@@ -1743,6 +1824,7 @@ function ProductionWorkbench({ workflow, stage, definitions, selectedNodeId, onS
   onSelect: (nodeId: string) => void;
   onOpen: (nodeId: string) => void;
   onRun: () => void;
+  onNext: () => void;
   onInputChange: (value: string) => void;
   referenceBooks: ReferenceBook[];
   importing: boolean;
@@ -1776,7 +1858,7 @@ function ProductionWorkbench({ workflow, stage, definitions, selectedNodeId, onS
   }, [isBookAnalysis, mapNodeRun?.id, run?.status]);
   useEffect(() => { if (!bookModel && globalModels[0]) setBookModel(globalModelKey(globalModels[0].connection_id, globalModels[0].model_id)); }, [globalModels, bookModel]);
   return <section className={`production-workbench ${isBookAnalysis ? "book-workbench" : ""}`} aria-label={isBookAnalysis ? "拆书工作台" : "简单写作工作台"}>
-    <div className="production-workbench-head"><div><small>WRITING DESK</small><h2>{stage?.title ?? workflow.name}</h2><p>{stage?.description ?? "选择一个步骤开始编辑"}</p></div><button className="run-button" onClick={onRun}>运行当前阶段</button></div>
+     <div className="production-workbench-head"><div><small>WRITING DESK</small><h2>{stage?.title ?? workflow.name}</h2><p>{stage?.description ?? "选择一个步骤开始编辑"}</p>{status?.latest_run_status === "waiting_approval" && <span className="workbench-status-hint">当前运行等待人工审批，请在“运行”面板处理。</span>}{status?.latest_run_status === "succeeded" && <span className="workbench-status-hint">当前阶段已完成，可以继续推进后续阶段。</span>}</div><div className="workbench-head-actions"><button className="run-button" onClick={onRun}>运行当前阶段</button>{status?.latest_run_status === "succeeded" && stage?.id !== "post" && <button className="next-stage-button" onClick={onNext}>下一阶段 <ChevronRight size={13} /></button>}</div></div>
     {isBookAnalysis ? <BookWorkbenchControls referenceBooks={referenceBooks} importing={importing} connections={connections} globalModels={globalModels} bookFile={bookFile} setBookFile={setBookFile} chunkSize={chunkSize} setChunkSize={setChunkSize} bookModel={bookModel} setBookModel={setBookModel} temperature={bookTemperature} setTemperature={setBookTemperature} selectedModel={selectedBookModel} onImportBook={onImportBook} status={status} onOpenReport={onOpenReport} mapSummary={mapSummary} onMapItemRetry={onMapItemRetry} onArtifactSelect={onArtifactSelect} /> : <label className="workbench-input-label">本次写作目标<textarea value={inputValue} onChange={(event) => onInputChange(event.target.value)} placeholder="写下本章要发生什么、人物要做什么，或粘贴待处理文本…" /></label>}
     <div className="production-workbench-stats"><span><b>{workflow.nodes.length}</b> 子节点</span><span><b>{aiNodes.length}</b> AI 步骤</span><span><b>{workflow.edges.length}</b> 条连线</span></div>
     <div className="production-workbench-steps">{workflow.nodes.map((node, index) => { const definition = definitions.find((item) => item.type === node.type); return <button key={node.id} className={node.id === selectedNodeId ? "active" : ""} onClick={() => onSelect(node.id)} onDoubleClick={() => onOpen(node.id)}><strong>{String(index + 1).padStart(2, "0")}</strong><span><small>{definition?.category?.toUpperCase() ?? "STEP"}</small><b>{String(node.config.title ?? definition?.title ?? node.type)}</b><em>{String(node.config.user_prompt ?? node.config.instruction ?? node.config.default ?? definition?.description ?? "")}</em></span><code>{node.type}</code></button>; })}</div>
@@ -2256,7 +2338,8 @@ function NodeInspector({
   );
 }
 
-function ModelCenter({ status, balance, profiles, connections, globalModels, skills, skillTemplates, referencedProfileIds, currentWorkflow, onStatus, onBalance, onProfiles, onConnections, onGlobalModels, onSkills, onSkillTemplates, onWorkflowCreated, onError }: {
+function ModelCenter({ projectId, status, balance, profiles, connections, globalModels, skills, skillTemplates, referencedProfileIds, currentWorkflow, onStatus, onBalance, onProfiles, onConnections, onGlobalModels, onSkills, onSkillTemplates, onPromptApply, onWorkflowCreated, onError }: {
+  projectId: string;
   status: ProviderStatus | null;
   balance: DeepSeekBalance | null;
   profiles: ModelProfile[];
@@ -2266,6 +2349,7 @@ function ModelCenter({ status, balance, profiles, connections, globalModels, ski
   skillTemplates: NodeSkillTemplate[];
   referencedProfileIds: Set<string>;
   currentWorkflow: WorkflowDocument | null;
+  onPromptApply: (promptId: string, content: string) => Promise<void>;
   onStatus: (status: ProviderStatus) => void;
   onBalance: (balance: DeepSeekBalance | null) => void;
   onProfiles: (profiles: ModelProfile[]) => void;
@@ -2306,6 +2390,14 @@ function ModelCenter({ status, balance, profiles, connections, globalModels, ski
   const [workflowTemplatePreview, setWorkflowTemplatePreview] = useState<WorkflowTemplateImportPreview | null>(null);
   const [workflowModelMappings, setWorkflowModelMappings] = useState<Record<string, { connection_id: string; model: string }>>({});
   const [importedWorkflowName, setImportedWorkflowName] = useState("");
+  const [officialPromptIds, setOfficialPromptIds] = useState<string[]>([]);
+  const [selectedPromptId, setSelectedPromptId] = useState("");
+  const [promptContent, setPromptContent] = useState("");
+  const [promptRevision, setPromptRevision] = useState<number | null>(null);
+  const [promptOverrideRevision, setPromptOverrideRevision] = useState(0);
+  const [promptOfficialContent, setPromptOfficialContent] = useState("");
+  const [promptDiff, setPromptDiff] = useState<string | null>(null);
+  const [promptVersions, setPromptVersions] = useState<Array<{ revision: number; content_hash: string; created_at: string }>>([]);
 
   useEffect(() => {
     if (status) {
@@ -2313,6 +2405,21 @@ function ModelCenter({ status, balance, profiles, connections, globalModels, ski
       setDefaultModel(status.defaultModel);
     }
   }, [status]);
+
+  useEffect(() => {
+    api.getOfficialPromptManifest().then((manifest) => {
+      setOfficialPromptIds(manifest.prompts);
+      setPromptRevision(manifest.revision);
+      setSelectedPromptId((current) => current || manifest.editable_prompts[0] || "");
+    }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedPromptId) return;
+    Promise.all([api.getOfficialPrompt(selectedPromptId), api.getPromptOverride(projectId, selectedPromptId)])
+      .then(([prompt, override]) => { setPromptOfficialContent(prompt.content); setPromptContent(override.content ?? prompt.content); setPromptOverrideRevision(override.revision); setPromptDiff(null); api.getPromptOverrideVersions(projectId, selectedPromptId).then(setPromptVersions).catch(() => setPromptVersions([])); })
+      .catch(() => setPromptContent("该 Prompt 只有稳定 ID，当前版本未提供可编辑正文。"));
+  }, [selectedPromptId, currentWorkflow?.id, projectId]);
 
   async function perform(name: string, action: () => Promise<void>) {
     setBusy(name);
@@ -2347,9 +2454,24 @@ function ModelCenter({ status, balance, profiles, connections, globalModels, ski
     <div className="inspector-body model-center">
       <div className="model-center-intro">
         <small>GLOBAL MODEL REGISTRY</small>
-        <h3>连接一次，所有节点自由选择</h3>
-        <p>统一管理供应商连接、全局模型、Skill 和可分享套件。</p>
+       <h3>连接一次，所有节点自由选择</h3>
+       <p>统一管理供应商连接、全局模型、Skill 和可分享套件。</p>
       </div>
+      <section className="prompt-registry-panel">
+        <div className="section-label">OFFICIAL PROMPT PACK</div>
+        <p className="section-help">查看官方 Prompt 版本。修改后只会写入当前 Workflow 的对应节点，不会改动官方原版。</p>
+        <select value={selectedPromptId} onChange={(event) => setSelectedPromptId(event.target.value)}>
+          <option value="">选择 Prompt…</option>
+          {officialPromptIds.map((promptId) => <option key={promptId} value={promptId}>{promptId}</option>)}
+        </select>
+        <small className="prompt-version-label">Pack revision {promptRevision ?? "-"}</small>
+        <textarea value={promptContent} onChange={(event) => setPromptContent(event.target.value)} placeholder="选择一个可编辑的官方 Prompt" />
+        <div className="prompt-diff-summary"><span>项目覆盖 v{promptOverrideRevision}</span><span>{promptContent === promptOfficialContent ? "与官方一致" : `已修改 ${Math.abs(promptContent.length - promptOfficialContent.length)} 字符`}</span></div>
+        {promptContent !== promptOfficialContent && <><button onClick={() => setPromptContent(promptOfficialContent)}>恢复官方正文</button><button onClick={() => void api.diffPromptOverride(projectId, selectedPromptId).then((result) => setPromptDiff(result.same ? "与官方正文一致" : result.unified_diff)).catch(() => setPromptDiff("无法读取 Prompt Diff"))}>查看覆盖 Diff</button><button onClick={() => void (async () => { if (!window.confirm("确认删除当前项目覆盖，恢复官方 Prompt？")) return; await api.deletePromptOverride(projectId, selectedPromptId, promptOverrideRevision); setPromptContent(promptOfficialContent); setPromptOverrideRevision(0); await onPromptApply(selectedPromptId, promptOfficialContent); })()}>删除项目覆盖</button></>}
+        {promptDiff && <pre className="prompt-diff-view">{promptDiff}</pre>}
+        {promptVersions.length > 0 && <details><summary>项目覆盖历史（{promptVersions.length}）</summary><div className="prompt-version-list">{promptVersions.map((version) => <div key={version.revision}><span><b>v{version.revision}</b><small>{new Date(version.created_at).toLocaleString()}</small></span><code>{version.content_hash.slice(0, 10)}</code>{version.revision !== promptOverrideRevision && <button onClick={() => void api.restorePromptOverrideVersion(projectId, selectedPromptId, version.revision).then((restored) => { setPromptContent(restored.content); setPromptOverrideRevision(restored.revision); return api.getPromptOverrideVersions(projectId, selectedPromptId); }).then(setPromptVersions)}>恢复</button>}</div>)}</div></details>}
+        <button className="primary-panel-button" disabled={!selectedPromptId || !promptContent || !currentWorkflow} onClick={() => void (async () => { const saved = await api.savePromptOverride(projectId, selectedPromptId, promptContent, promptOverrideRevision || null); await onPromptApply(selectedPromptId, promptContent); setPromptOverrideRevision(saved.revision); setPromptVersions(await api.getPromptOverrideVersions(projectId, selectedPromptId)); })()}>保存项目覆盖并应用</button>
+      </section>
       <details className="quick-provider-setup">
         <summary>DeepSeek 官方快速接入（可选）</summary>
         <div className={`provider-hero ${status?.configured ? "ready" : "missing"}`}>
@@ -2759,6 +2881,14 @@ function AssetsPanel({ projectId }: { projectId: string }) {
   const [proposalPreview, setProposalPreview] = useState<StatePatchPreview | null>(null);
   const [newAssetName, setNewAssetName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const stateSummary = (() => {
+    if (!selected || selected.category !== "state") return null;
+    try {
+      const value = JSON.parse(editContent) as Record<string, unknown>;
+      const arrays = Object.entries(value).filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]));
+      return { fields: Object.keys(value).length, arrays: arrays.map(([name, items]) => ({ name, count: items.length })) };
+    } catch { return { fields: 0, arrays: [], invalid: true }; }
+  })();
 
   useEffect(() => {
     setSelected(null);
@@ -2783,6 +2913,7 @@ function AssetsPanel({ projectId }: { projectId: string }) {
   ];
   return (
     <div className="inspector-body assets-panel">
+      <button className="primary-panel-button" onClick={() => void api.exportProject(projectId).then((bundle) => downloadJson(`whitebox-project-${projectId}.json`, bundle)).catch((reason: Error) => setError(readApiError(reason)))}>导出完整项目</button>
       <div className="asset-tabs">{categories.map(([value, label]) => <button key={value} className={category === value ? "active" : ""} onClick={() => setCategory(value)}>{label}</button>)}</div>
       {error && <div className="error-box" role="alert">{error}</div>}
       {category === "chapters" && <div className="asset-list">{chapters.map((chapter) => <button key={chapter.archive_artifact_id} onClick={() => api.getProjectAssets(projectId, "manuscript").then((items) => {
@@ -2819,7 +2950,7 @@ function AssetsPanel({ projectId }: { projectId: string }) {
           } catch (reason) { setError(readApiError(reason as Error)); }
         }}>新建</button></div>
       )}
-      {selected && <section className="asset-preview"><div className="section-label">PREVIEW / {selected.content_hash.slice(0, 12)}</div><h3>{selected.name}</h3>{selected.category === "manuscript" ? <pre>{prettyContent(selected.content, selected.media_type)}</pre> : <>
+       {selected && <section className="asset-preview"><div className="section-label">PREVIEW / {selected.content_hash.slice(0, 12)}</div><h3>{selected.name}</h3>{stateSummary && <div className={`state-summary ${"invalid" in stateSummary ? "invalid" : ""}`}><div><b>{stateSummary.fields}</b><span>状态字段</span></div>{stateSummary.arrays.map((item) => <div key={item.name}><b>{item.count}</b><span>{item.name}</span></div>)}{"invalid" in stateSummary && <p>当前内容不是有效 JSON，保存前请修复。</p>}</div>}{selected.category === "manuscript" ? <pre>{prettyContent(selected.content, selected.media_type)}</pre> : <>
         <textarea className="asset-editor" value={editContent} onChange={(event) => setEditContent(event.target.value)} />
         <input value={saveNote} onChange={(event) => setSaveNote(event.target.value)} placeholder="版本说明（可选）" />
         <button className="asset-save-button" onClick={async () => {
@@ -2848,10 +2979,12 @@ function AssetsPanel({ projectId }: { projectId: string }) {
           }}>恢复为新版本</button>}</div>)}
         </details>}
       </>}</section>}
-      {selectedProposal && proposalPreview && <section className="proposal-apply"><div className="section-label">STATE PATCH PREVIEW</div><h3>{proposalPreview.already_applied ? "该提案已应用" : `将执行 ${proposalPreview.operations.length} 项字段变更`}</h3>{proposalPreview.operations.map((item) => <article className="field-patch" key={item.operation_id}><header><b>{item.operation.toUpperCase()}</b><span>{item.target_relative_path}{item.pointer}</span>{item.finding_id && <code>{item.finding_id}</code>}</header><p>{item.reason}</p><div><section><small>旧值</small><pre>{JSON.stringify(item.old_value, null, 2)}</pre></section><section><small>新值</small><pre>{JSON.stringify(item.new_value, null, 2)}</pre></section></div></article>)}<button disabled={proposalPreview.already_applied} onClick={async () => {
-        try {
-          await api.applyStateProposal(projectId, selectedProposal.id, proposalPreview.expected_hashes, "在资产面板人工应用");
-          setProposalPreview(await api.previewStateProposal(projectId, selectedProposal.id));
+       {selectedProposal && proposalPreview && <section className="proposal-apply"><div className="section-label">STATE PATCH PREVIEW</div><h3>{proposalPreview.already_applied ? "该提案已应用" : `将执行 ${proposalPreview.operations.length} 项字段变更`}</h3><p className="section-help">这是来自已批准章节的状态变更候选。应用后会创建新的资产版本，不会修改历史版本。</p>{proposalPreview.operations.map((item) => <article className="field-patch" key={item.operation_id}><header><b>{item.operation.toUpperCase()}</b><span>{item.target_relative_path}{item.pointer}</span>{item.finding_id && <code>{item.finding_id}</code>}</header><p>{item.reason}</p><div><section><small>旧值</small><pre>{JSON.stringify(item.old_value, null, 2)}</pre></section><section><small>新值</small><pre>{JSON.stringify(item.new_value, null, 2)}</pre></section></div></article>)}<button disabled={proposalPreview.already_applied} onClick={async () => {
+         if (!window.confirm(`确认应用这 ${proposalPreview.operations.length} 项状态变更？应用后会创建新的资产版本。`)) return;
+         try {
+           await api.applyStateProposal(projectId, selectedProposal.id, proposalPreview.expected_hashes, "在资产面板人工应用");
+           setProposalPreview(await api.previewStateProposal(projectId, selectedProposal.id));
+           setProposals(await api.getStateProposals(projectId));
         } catch (reason) { setError(readApiError(reason as Error)); }
       }}>人工应用到状态日志</button></section>}
     </div>
@@ -2885,16 +3018,32 @@ function groupRunNodes(nodeRuns: Run["node_runs"], componentNames: Record<string
   return groups;
 }
 
-function RunInspector({ run, events, approval, componentNames, onSelectNode, onCancel, onDecideApproval }: {
+function RunInspector({ run, events, approval, componentNames, onSelectNode, onCancel, onOpenAssets, onDecideApproval }: {
   run: Run | null;
   events: RunEvent[];
   approval: ApprovalRecord | null;
   componentNames: Record<string, string>;
   onSelectNode: (id: string) => void;
   onCancel: () => void;
+  onOpenAssets: (category: "proposals") => void;
   onDecideApproval: (decision: "approved" | "rejected", note: string) => Promise<void>;
 }) {
   const [approvalNote, setApprovalNote] = useState("");
+  const [evidenceArtifacts, setEvidenceArtifacts] = useState<Record<string, Artifact>>({});
+  const [expandedEvidenceId, setExpandedEvidenceId] = useState<string | null>(null);
+  const [editableDraft, setEditableDraft] = useState("");
+  const [draftSaved, setDraftSaved] = useState(false);
+  const chapterEvidence = run?.node_runs.filter((item) => ["writing.llm_draft", "writing.llm_review", "writing.llm_arbiter", "writing.llm_revision", "writing.revision_diff", "writing.quality_gate"].includes(item.node_type)) ?? [];
+  useEffect(() => {
+    const ids = chapterEvidence.filter((item) => item.output_artifact_id).map((item) => [item.id, item.output_artifact_id!] as const);
+    if (!ids.length) { setEvidenceArtifacts({}); return; }
+    Promise.all(ids.map(async ([nodeRunId, artifactId]) => [nodeRunId, await api.getArtifact(artifactId)] as const)).then((items) => setEvidenceArtifacts(Object.fromEntries(items))).catch(() => setEvidenceArtifacts({}));
+  }, [run?.id, run?.status]);
+  useEffect(() => {
+    const preferred = chapterEvidence.find((item) => item.node_type === "writing.llm_revision") ?? chapterEvidence.find((item) => item.node_type === "writing.llm_draft");
+    const value = preferred ? evidenceArtifacts[preferred.id]?.content.text : undefined;
+    if (value) { setEditableDraft(value); setDraftSaved(false); }
+  }, [evidenceArtifacts]);
   return (
     <div className="inspector-body">
       <div className="manifesto">
@@ -2915,10 +3064,13 @@ function RunInspector({ run, events, approval, componentNames, onSelectNode, onC
               <textarea value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)} placeholder="审批备注（可选）" />
               <div><button className="reject" onClick={() => onDecideApproval("rejected", approvalNote)}>驳回</button><button className="approve" onClick={() => onDecideApproval("approved", approvalNote)}>批准并继续归档</button></div>
             </section>
-          )}
+           )}
+          {run.status === "succeeded" && run.node_runs.some((item) => item.node_type === "writing.state_proposal" && item.output_artifact_id) && <button className="attention-node-button" onClick={() => onOpenAssets("proposals")}>查看本次运行生成的状态提案</button>}
           {run.status === "running" && (
             <button className="cancel-button" onClick={onCancel}><Square size={13} fill="currentColor" /> 取消当前运行</button>
           )}
+          {chapterEvidence.length > 0 && <section className="chapter-evidence-panel"><div className="section-label">CHAPTER EVIDENCE</div><h3>章节写审裁修证据</h3><div>{chapterEvidence.map((item) => { const evidence = evidenceArtifacts[item.id]; const expanded = expandedEvidenceId === item.id; return <div className="chapter-evidence-item" key={item.id}><button className={`status-${item.status}`} onClick={() => setExpandedEvidenceId(expanded ? null : item.id)}><span className="stage-status-dot" /><b>{item.node_type === "writing.llm_draft" ? "草稿" : item.node_type === "writing.llm_review" ? "独立审查" : item.node_type === "writing.llm_arbiter" ? "意见裁决" : item.node_type === "writing.llm_revision" ? "定向修订" : item.node_type === "writing.revision_diff" ? "文本 Diff" : "质量门"}</b><small>{item.status} · Attempt {item.attempt}</small><ChevronRight size={13} /></button>{expanded && evidence && <div className="chapter-evidence-detail">{evidence.content.text && <pre>{evidence.content.text}</pre>}{evidence.content.findings && <div>{evidence.content.findings.map((finding) => <article key={finding.id}><b>{finding.id} · {finding.severity}</b><blockquote>{finding.quote}</blockquote><p>{finding.evidence}</p><small>{finding.recommendation}</small></article>)}</div>}{evidence.content.decisions && <pre>{JSON.stringify(evidence.content.decisions, null, 2)}</pre>}{evidence.content.unified_diff && <pre className="diff-view">{evidence.content.unified_diff}</pre>}{evidence.content.checks && <pre>{JSON.stringify(evidence.content.checks, null, 2)}</pre>}<button onClick={() => onSelectNode(item.node_id)}>打开完整节点证据</button></div>}</div>; })}</div></section>}
+          {editableDraft && <section className="chapter-draft-editor"><div className="section-label">AUTHOR DRAFT WORKSPACE</div><h3>作者编辑稿</h3><p className="section-help">编辑不会修改不可变 Artifact。保存后会创建新的项目草稿资产版本。</p><textarea value={editableDraft} onChange={(event) => { setEditableDraft(event.target.value); setDraftSaved(false); }} /><button className="primary-panel-button" disabled={draftSaved || !editableDraft.trim()} onClick={() => void api.saveRunChapterDraft(run.id, editableDraft).then(() => setDraftSaved(true))}>{draftSaved ? "已保存版本" : "保存作者编辑稿"}</button></section>}
           <section>
             <div className="section-label">NODE RUNS</div>
               <div className="hierarchical-run-list">

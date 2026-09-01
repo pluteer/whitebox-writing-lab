@@ -29,6 +29,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
     if (Test-Path "$Packaging\runtime\api") { Remove-Item -Recurse -Force "$Packaging\runtime\api" }
     Rename-Item "$Packaging\runtime\whitebox-api" api
+    New-Item -ItemType Directory -Force "$Packaging\runtime\web" | Out-Null
     Copy-Item -Recurse -Force "$Root\apps\web\dist\*" "$Packaging\runtime\web"
     Copy-Item -Force "$Root\launcher\WhiteboxPortable.ps1", "$Root\launcher\StartWhiteboxPortable.bat", "$Root\README.md" $Packaging
     if (-not $SkipInstaller) {

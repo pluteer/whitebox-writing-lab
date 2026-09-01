@@ -51,6 +51,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
           Remove-Item -Recurse -Force packaging -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force packaging\runtime, packaging\data, packaging\logs | Out-Null
           npm.cmd ci
@@ -64,21 +65,23 @@ jobs:
           New-Item -ItemType Directory -Force packaging\runtime\web | Out-Null
           Copy-Item -Recurse -Force apps\web\dist\* packaging\runtime\web
           Copy-Item -Force launcher\WhiteboxPortable.ps1, launcher\StartWhiteboxPortable.bat, README.md packaging
-          tar.exe -a -c -f packaging\whitebox-writing-portable-0.3.1.zip -C packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md
+          tar.exe -a -c -f "packaging\whitebox-writing-portable-$version.zip" -C packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md
           if ($LASTEXITCODE -ne 0) { throw 'Portable archive creation failed' }
       - name: Verify portable bundle
         shell: powershell
         run: |
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
           if (-not (Test-Path .\packaging\runtime\api\whitebox-api.exe)) { throw "API executable is missing" }
           if (-not (Test-Path .\packaging\runtime\web\index.html)) { throw "Web bundle is missing" }
-          if (-not (Test-Path .\packaging\whitebox-writing-portable-0.3.1.zip)) { throw "Portable archive is missing" }
+          if (-not (Test-Path ".\packaging\whitebox-writing-portable-$version.zip")) { throw "Portable archive is missing" }
       - name: Write SHA256
         shell: powershell
         run: |
-          (Get-FileHash .\packaging\whitebox-writing-portable-0.3.1.zip -Algorithm SHA256).Hash | Set-Content .\packaging\whitebox-writing-portable-0.3.1.sha256
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
+          (Get-FileHash ".\packaging\whitebox-writing-portable-$version.zip" -Algorithm SHA256).Hash.ToLowerInvariant() | Set-Content ".\packaging\whitebox-writing-portable-$version.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: whitebox-writing-portable-0.3.1
+          name: whitebox-writing-portable
           path: |
-            packaging/whitebox-writing-portable-0.3.1.zip
-            packaging/whitebox-writing-portable-0.3.1.sha256
+            packaging/whitebox-writing-portable-*.zip
+            packaging/whitebox-writing-portable-*.sha256

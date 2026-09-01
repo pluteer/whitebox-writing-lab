@@ -28,6 +28,20 @@ def test_projects_get_isolated_default_production_canvases(tmp_path) -> None:
     }
 
 
+def test_existing_canvas_recovers_missing_official_stages(tmp_path) -> None:
+    app = create_app(tmp_path / "production-repair.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "恢复测试", "slug": "repair"}).json()
+        canvas = client.get(f"/api/projects/{project['id']}/production-canvas").json()
+        canvas["stages"] = [stage for stage in canvas["stages"] if stage["id"] not in {"setup", "world"}]
+        canvas["edges"] = []
+        assert client.put(f"/api/projects/{project['id']}/production-canvas", json=canvas).status_code == 200
+        repaired = client.get(f"/api/projects/{project['id']}/production-canvas").json()
+
+    assert {stage["id"] for stage in repaired["stages"]} >= {"setup", "world", "chapter", "analysis"}
+    assert any(edge["id"] == "setup-world" for edge in repaired["edges"])
+
+
 def test_component_parameters_are_applied_to_composed_node() -> None:
     workflow = WorkflowDocument.model_validate({
         "id": "parameterized", "name": "Parameterized", "revision": 2,
@@ -150,6 +164,18 @@ def test_blank_workflow_endpoint_creates_input_output_body(tmp_path) -> None:
     assert workflow["id"].startswith("user:")
     assert [node["type"] for node in workflow["nodes"]] == ["workflow.input", "workflow.output"]
     assert validation["valid"] is True
+
+
+def test_standalone_blank_workflow_has_no_nodes(tmp_path) -> None:
+    app = create_app(tmp_path / "empty-workflow.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        response = client.post("/api/workflows/blank", json={
+            "name": "ComfyUI 空白工作流", "with_boundary_nodes": False,
+        })
+
+    assert response.status_code == 201
+    assert response.json()["nodes"] == []
+    assert response.json()["edges"] == []
 
 
 def test_production_canvas_rejects_unknown_or_mismatched_exposed_ports(tmp_path) -> None:

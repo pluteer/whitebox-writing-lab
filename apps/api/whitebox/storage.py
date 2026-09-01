@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -278,6 +279,21 @@ class Storage:
                     chunk_size INTEGER NOT NULL, chunk_count INTEGER NOT NULL,
                     workflow_id TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS prompt_overrides (
+                    project_id TEXT NOT NULL REFERENCES projects(id),
+                    prompt_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, prompt_id)
+                );
+                CREATE TABLE IF NOT EXISTS prompt_override_versions (
+                    project_id TEXT NOT NULL REFERENCES projects(id), prompt_id TEXT NOT NULL,
+                    revision INTEGER NOT NULL, content TEXT NOT NULL, content_hash TEXT NOT NULL,
+                    created_at TEXT NOT NULL, PRIMARY KEY(project_id, prompt_id, revision)
+                );
                 CREATE INDEX IF NOT EXISTS idx_events_run_sequence ON events(run_id, sequence);
                 CREATE INDEX IF NOT EXISTS idx_attempts_node_run ON node_attempts(node_run_id, attempt);
                 CREATE INDEX IF NOT EXISTS idx_provider_calls_attempt ON provider_calls(attempt_id);
@@ -300,6 +316,57 @@ class Storage:
                 db.execute("ALTER TABLE skill_versions ADD COLUMN capabilities TEXT NOT NULL DEFAULT '[]'")
             if "parameters_schema" not in skill_version_columns:
                 db.execute("ALTER TABLE skill_versions ADD COLUMN parameters_schema TEXT NOT NULL DEFAULT '{}'")
+
+    def get_prompt_override(self, project_id: str, prompt_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM prompt_overrides WHERE project_id=? AND prompt_id=?",
+                (project_id, prompt_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_prompt_override(self, project_id: str, prompt_id: str, content: str, expected_revision: int | None = None) -> dict[str, Any]:
+        now = utc_now()
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        with self._lock, self._connect() as db:
+            row = db.execute(
+                "SELECT revision FROM prompt_overrides WHERE project_id=? AND prompt_id=?",
+                (project_id, prompt_id),
+            ).fetchone()
+            current = int(row["revision"]) if row else 0
+            if expected_revision is not None and expected_revision != current:
+                raise ValueError(f"Prompt 覆盖版本冲突，当前版本为 {current}")
+            revision = current + 1
+            db.execute(
+                "INSERT INTO prompt_overrides VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(project_id,prompt_id) DO UPDATE SET revision=excluded.revision, content=excluded.content, content_hash=excluded.content_hash, updated_at=excluded.updated_at",
+                (project_id, prompt_id, revision, content, content_hash, now, now),
+            )
+            db.execute(
+                "INSERT INTO prompt_override_versions VALUES(?,?,?,?,?,?)",
+                (project_id, prompt_id, revision, content, content_hash, now),
+            )
+        return self.get_prompt_override(project_id, prompt_id)
+
+    def list_prompt_override_versions(self, project_id: str, prompt_id: str) -> list[dict[str, Any]]:
+        with self._connect() as db:
+            rows = db.execute("SELECT * FROM prompt_override_versions WHERE project_id=? AND prompt_id=? ORDER BY revision DESC", (project_id, prompt_id)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_prompt_override_version(self, project_id: str, prompt_id: str, revision: int) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM prompt_override_versions WHERE project_id=? AND prompt_id=? AND revision=?", (project_id, prompt_id, revision)).fetchone()
+        return dict(row) if row else None
+
+    def delete_prompt_override(self, project_id: str, prompt_id: str, expected_revision: int | None = None) -> bool:
+        with self._lock, self._connect() as db:
+            row = db.execute("SELECT revision FROM prompt_overrides WHERE project_id=? AND prompt_id=?", (project_id, prompt_id)).fetchone()
+            if not row:
+                return False
+            if expected_revision is not None and int(row["revision"]) != expected_revision:
+                raise ValueError(f"Prompt 覆盖版本冲突，当前版本为 {row['revision']}")
+            db.execute("DELETE FROM prompt_overrides WHERE project_id=? AND prompt_id=?", (project_id, prompt_id))
+        return True
 
     def ensure_demo_project(self) -> None:
         now = utc_now()
@@ -938,6 +1005,11 @@ class Storage:
             rows = db.execute("SELECT document FROM workflows ORDER BY updated_at DESC").fetchall()
         return [WorkflowDocument.model_validate_json(row["document"]) for row in rows]
 
+    def delete_workflow(self, workflow_id: str) -> bool:
+        with self._lock, self._connect() as db:
+            cursor = db.execute("DELETE FROM workflows WHERE id=?", (workflow_id,))
+        return cursor.rowcount > 0
+
     def create_run(self, run_id: str, graph: ExecutionGraph, node_run_ids: dict[str, str]) -> None:
         now = utc_now()
         with self._lock, self._connect() as db:
@@ -1181,6 +1253,20 @@ class Storage:
             if run and (project_id is None or run.snapshot.run_context.get("project_id") == project_id):
                 return run
         return None
+
+    def list_runs(self, project_id: str | None = None, limit: int = 50) -> list[Run]:
+        """Return recent run snapshots for the local run history panel."""
+        safe_limit = max(1, min(limit, 200))
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT id FROM runs ORDER BY created_at DESC LIMIT ?", (safe_limit,)
+            ).fetchall()
+        runs: list[Run] = []
+        for row in rows:
+            run = self.get_run(row["id"])
+            if run and (project_id is None or run.snapshot.run_context.get("project_id") == project_id):
+                runs.append(run)
+        return runs
 
     def get_latest_production_run_for_stage(self, project_id: str, stage_id: str) -> Run | None:
         with self._connect() as db:

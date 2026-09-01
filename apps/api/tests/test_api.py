@@ -23,11 +23,79 @@ def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
         info = client.get("/api/runtime-info")
 
     assert info.status_code == 200
-    assert info.json()["version"] == "0.3.1"
+    assert info.json()["version"] == "0.4.0"
     assert info.json()["mode"] == "development"
     assert info.json()["database_path"] == str(database)
     assert info.json()["secrets_path"] == str(secrets)
     assert info.json()["projects_path"] == str(projects)
+
+
+def test_project_creation_persists_author_brief_as_versioned_asset(tmp_path) -> None:
+    project_root = tmp_path / "brief-projects"
+    app = create_app(tmp_path / "brief.db", DeepSeekProvider(api_key="test"), project_root=project_root)
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={
+            "title": "简报书", "slug": "brief-book", "genre": "悬疑", "brief": "一名失忆剑客在旧戏楼寻找自己的名字。",
+        }).json()
+        assets = client.get(f"/api/projects/{project['id']}/assets?category=outline").json()
+        intent = next(item for item in assets if item["relative_path"] == "outline/author_intent.md")
+        content = client.get(f"/api/projects/{project['id']}/assets/{intent['id']}").json()
+    assert "悬疑" in content["content"]
+    assert "失忆剑客" in content["content"]
+
+
+def test_project_export_contains_readable_assets_without_secrets(tmp_path) -> None:
+    project_root = tmp_path / "export-projects"
+    app = create_app(tmp_path / "export.db", DeepSeekProvider(api_key="test-secret"), project_root=project_root)
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "导出书", "slug": "export-book", "brief": "导出简报"}).json()
+        bundle = client.get(f"/api/projects/{project['id']}/export")
+    assert bundle.status_code == 200
+    assert bundle.json()["format"] == "whitebox.project-bundle"
+    assert any(item["path"] == "outline/author_intent.md" for item in bundle.json()["files"])
+    assert "test-secret" not in bundle.text
+
+
+def test_project_bundle_round_trip_and_path_validation(tmp_path) -> None:
+    project_root = tmp_path / "bundle-projects"
+    app = create_app(tmp_path / "bundle.db", DeepSeekProvider(api_key="test"), project_root=project_root)
+    with TestClient(app) as client:
+        source = client.post("/api/projects", json={"title": "源项目", "slug": "bundle-source", "brief": "可移植简报"}).json()
+        bundle = client.get(f"/api/projects/{source['id']}/export").json()
+        imported = client.post("/api/project-bundles/import", json={"title": "导入项目", "slug": "bundle-target", "bundle": bundle})
+        malicious = {**bundle, "files": [{"path": "../secret.txt", "content": "x"}]}
+        rejected = client.post("/api/project-bundles/import", json={"title": "坏项目", "slug": "bad-bundle", "bundle": malicious})
+    assert imported.status_code == 201
+    assert imported.json()["production_canvas"]["project_id"] == imported.json()["project"]["id"]
+    assert (project_root / "bundle-target" / "outline" / "author_intent.md").is_file()
+    assert rejected.status_code == 422
+    assert not (project_root / "bad-bundle").exists()
+
+
+def test_auto_director_candidates_confirm_into_checkpointed_project(tmp_path) -> None:
+    project_root = tmp_path / "director-projects"
+    app = create_app(tmp_path / "director.db", DeepSeekProvider(api_key="test"), project_root=project_root)
+    with TestClient(app) as client:
+        generated = client.post("/api/director/candidates", json={"inspiration": "失忆剑客在戏楼醒来", "genre": "悬疑", "target_chapters": 60})
+        candidate = generated.json()["candidates"][0]
+        confirmed = client.post("/api/director/confirm", json={"title": "戏楼无名客", "slug": "director-book", "candidate": candidate})
+        invalid = client.post("/api/director/confirm", json={"title": "坏候选", "slug": "bad-director", "candidate": {"id": "fake"}})
+    assert generated.status_code == 200
+    assert confirmed.status_code == 201
+    assert (project_root / "director-book" / "outline" / "author_intent.md").is_file()
+    state = json.loads((project_root / "director-book" / "state" / "director-state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "confirmed"
+    assert state["candidate"]["target_chapters"] == 60
+    assert invalid.status_code == 422
+    assert not (project_root / "bad-director").exists()
+
+
+def test_run_history_can_be_filtered_by_project(tmp_path) -> None:
+    app = create_app(tmp_path / "run-history.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        response = client.get("/api/runs?project_id=demo-project")
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 class FakeDeepSeekProvider:
@@ -216,6 +284,87 @@ def test_prompt_call_debug_run_is_isolated_from_source_workflow(tmp_path) -> Non
     assert source["nodes"][0]["config"]["user_prompt"] == "原始生产 Prompt"
     assert "只在调试中补充这一句" in call["request_payload"]["messages"][1]["content"]
     assert artifact["schema_type"] == "ai.PromptResult@1"
+
+
+def test_project_prompt_override_is_used_at_runtime(tmp_path) -> None:
+    app = make_test_app(tmp_path / "prompt-runtime.db")
+    workflow = {
+        "id": "prompt-runtime", "name": "Prompt runtime", "revision": 1,
+        "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "任务"}}, {
+            "id": "call", "type": "ai.prompt_call", "position": {"x": 300, "y": 0},
+            "config": {"connection_id": "deepseek-official", "model": "deepseek-v4-flash", "user_prompt": "{{input.text}}", "prompt_id": "chapter.writer.system", "system_prompt": "原始系统"},
+        }], "edges": [{"id": "edge", "source": "source", "target": "call", "source_port": "draft", "target_port": "input"}],
+    }
+    with TestClient(app) as client:
+        client.put("/api/projects/demo-project/prompt-overrides/chapter.writer.system", json={"content": "项目系统覆盖"})
+        run_id = client.post("/api/runs", json={"workflow": workflow, "project_id": "demo-project"}).json()["runId"]
+        run = wait_for_status(client, run_id, {"succeeded"})
+        node_run = next(item for item in run["node_runs"] if item["node_id"] == "call")
+        attempt = client.get(f"/api/node-runs/{node_run['id']}/attempts").json()[0]
+        call = client.get(f"/api/attempts/{attempt['id']}/provider-calls").json()[0]
+    assert call["request_payload"]["messages"][0]["content"] == "项目系统覆盖"
+    assert call["request_payload"]["prompt_snapshot"]["project_override_revision"] == 1
+
+
+def test_artifact_project_filter_prevents_cross_project_reads(tmp_path) -> None:
+    app = make_test_app(tmp_path / "artifact-isolation.db")
+    workflow = {"id": "isolated-source", "name": "isolated", "revision": 1, "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "private"}}], "edges": []}
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "隔离项目", "slug": "isolated-project"}).json()
+        run_id = client.post("/api/runs", json={"workflow": workflow, "project_id": project["id"]}).json()["runId"]
+        run = wait_for_status(client, run_id, {"succeeded"})
+        artifact_id = run["node_runs"][0]["output_artifact_id"]
+        denied = client.get(f"/api/artifacts/{artifact_id}?project_id=demo-project")
+        allowed = client.get(f"/api/artifacts/{artifact_id}?project_id={project['id']}")
+    assert denied.status_code == 404
+    assert allowed.status_code == 200
+
+
+def test_run_comparison_is_project_scoped(tmp_path) -> None:
+    app = make_test_app(tmp_path / "run-compare.db")
+    workflow = {"id": "compare-source", "name": "compare", "revision": 1, "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "x"}}], "edges": []}
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "对比项目", "slug": "compare-project"}).json()
+        first = client.post("/api/runs", json={"workflow": workflow, "project_id": project["id"]}).json()["runId"]
+        second = client.post("/api/runs", json={"workflow": workflow, "project_id": project["id"]}).json()["runId"]
+        wait_for_status(client, first, {"succeeded"})
+        wait_for_status(client, second, {"succeeded"})
+        comparison = client.get(f"/api/run-comparisons?left_id={first}&right_id={second}&project_id={project['id']}")
+        denied = client.get(f"/api/run-comparisons?left_id={first}&right_id={second}&project_id=demo-project")
+    assert comparison.status_code == 200
+    assert comparison.json()["same_graph"] is True
+    assert denied.status_code == 404
+
+
+def test_run_chapter_draft_saves_versioned_author_workspace(tmp_path) -> None:
+    project_root = tmp_path / "draft-projects"
+    app = create_app(tmp_path / "draft-workspace.db", FakeDeepSeekProvider(), project_root=project_root)
+    workflow = {"id": "draft-source", "name": "draft", "revision": 1, "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "x"}}], "edges": []}
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "编辑稿", "slug": "draft-book"}).json()
+        run_id = client.post("/api/runs", json={"workflow": workflow, "project_id": project["id"], "chapter_number": 3}).json()["runId"]
+        wait_for_status(client, run_id, {"succeeded"})
+        first = client.post(f"/api/runs/{run_id}/chapter-draft", json={"content": "作者第一版"})
+        second = client.post(f"/api/runs/{run_id}/chapter-draft", json={"content": "作者第二版", "expected_hash": first.json()["content_hash"]})
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["version"] == 2
+    assert (project_root / "draft-book" / "outline" / "chapter-drafts" / "chapter-0003.md").read_text(encoding="utf-8") == "作者第二版"
+
+
+def test_failed_run_can_resume_from_first_failed_node(tmp_path) -> None:
+    app = make_test_app(tmp_path / "resume.db")
+    workflow = {"id": "resume-flow", "name": "resume", "revision": 1, "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "x", "fail_attempts": 1}}], "edges": []}
+    with TestClient(app) as client:
+        run_id = client.post("/api/runs", json={"workflow": workflow, "project_id": "demo-project"}).json()["runId"]
+        wait_for_status(client, run_id, {"failed"})
+        resumed = client.post(f"/api/runs/{run_id}/resume")
+        succeeded = wait_for_status(client, run_id, {"succeeded"})
+        conflict = client.post(f"/api/runs/{run_id}/resume")
+    assert resumed.status_code == 202
+    assert resumed.json()["resumedNodeId"] == "source"
+    assert succeeded["status"] == "succeeded"
+    assert conflict.status_code == 409
 
 
 def test_agent_task_keeps_tool_and_round_evidence(tmp_path) -> None:

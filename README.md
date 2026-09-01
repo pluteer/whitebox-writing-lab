@@ -28,6 +28,8 @@ Whitebox Writing Lab 把写作过程从一条不可见的 Prompt 链或黑盒 Ag
 - Windows 启动器：通过 PowerShell + WSL 检查环境、安装依赖、启动服务和查看日志。
 - Windows 便携包：提供原生 API、静态 Web 和双击启动入口，朋友无需安装 WSL、Python、Node.js 或 npm 即可运行。
 
+官方默认作品流程的使用说明见 [`docs/OFFICIAL_WORKFLOW.md`](docs/OFFICIAL_WORKFLOW.md)，Prompt 分层、变量和输出契约见 [`docs/PROMPT_DESIGN.md`](docs/PROMPT_DESIGN.md)。新建项目后无需自行编排即可从立项一路推进到章节生产、审批和章后状态提案。
+
 ## Screenshots
 
 项目当前以本地开发和功能验证为主，截图和演示素材将在 UI 稳定后补充。
@@ -68,7 +70,7 @@ apps/api/.venv/bin/pip install -e "./apps/api[dev]"
 ### 3. Start the API
 
 ```bash
-apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000
+apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8001
 ```
 
 ### 4. Start the Web UI
@@ -95,7 +97,7 @@ launcher\启动Whitebox.bat
 
 启动器会检查 WSL、Python、Node/npm、Python venv 和 Web 依赖，并提供启动、停止、安装/修复依赖、日志查看、打开 WebUI 和打开项目目录等操作。
 
-启动器只绑定 `127.0.0.1:8000` 和 `127.0.0.1:5173`，不会向局域网开放服务。详细说明见 [`launcher/README.md`](launcher/README.md)。
+启动器只绑定 `127.0.0.1:8001` 和 `127.0.0.1:5173`，不会向局域网开放服务。详细说明见 [`launcher/README.md`](launcher/README.md)。
 
 ## Model Configuration
 
@@ -132,6 +134,13 @@ export DEEPSEEK_API_KEY="your-key"
 apps/api/.venv/bin/pytest
 ```
 
+快速反馈可跳过异步工作流集成测试：
+
+```bash
+apps/api/.venv/bin/pytest -m "not slow"
+apps/api/.venv/bin/pytest -m slow
+```
+
 运行前端测试：
 
 ```bash
@@ -160,10 +169,12 @@ installer\构建安装包.bat
 如果只是分享给朋友，推荐使用便携包构建脚本。便携模式使用独立的 `data/` 和 `logs/`，不会读取开发目录的数据：
 
 ```powershell
-.\installer\构建便携包.ps1 -Version 0.3.1
+.\installer\构建便携包.ps1 -Version 0.4.0
 ```
 
-将 `packaging\whitebox-writing-portable-0.3.1.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
+将 `packaging\whitebox-writing-portable-0.4.0.zip` 发送给朋友。对方解压后双击 `StartWhiteboxPortable.bat` 即可打开 WebUI。首次使用仍需在 WebUI 中填写对方自己的模型 API Key；不要分享包含个人数据库或密钥的 `data` 目录。
+
+GitHub Release 中的 ZIP、EXE 和 `SHA256SUMS` 使用 Sigstore keyless signing。下载后应同时取得同名 `.sigstore.json`，验证方法见 [`docs/SIGSTORE.md`](docs/SIGSTORE.md)。Sigstore 是可审计的供应链签名，不是 Windows Authenticode，因此系统属性页不一定显示传统代码签名发布者。
 
 ## Project Status
 

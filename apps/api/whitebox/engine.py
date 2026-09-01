@@ -539,6 +539,25 @@ class WorkflowEngine:
         connection = node.config["connection_snapshot"]
         provider = self.provider_resolver(connection) if self.provider_resolver else self.deepseek
         instruction = str(node.config.get("instruction", ""))
+        run_context = self.storage.get_run(run_id).snapshot.run_context
+        prompt_id = str(node.config.get("prompt_id", ""))
+        instruction_prompt_id = str(node.config.get("instruction_prompt_id", ""))
+        project_id = str(run_context.get("project_id", ""))
+        override = None
+        instruction_override = None
+        if prompt_id and project_id:
+            override = self.storage.get_prompt_override(project_id, prompt_id)
+            if override:
+                if prompt_id.endswith(".system"):
+                    node.config["system_prompt"] = override["content"]
+                elif prompt_id.endswith(".instruction"):
+                    instruction = str(override["content"])
+                else:
+                    node.config["user_prompt"] = override["content"]
+        if instruction_prompt_id and project_id:
+            instruction_override = self.storage.get_prompt_override(project_id, instruction_prompt_id)
+            if instruction_override:
+                instruction = str(instruction_override["content"])
         if node.type in {"writing.deepseek_draft", "writing.llm_draft"}:
             parent = by_type.get("writing.Draft@1")
             if not parent:
@@ -673,6 +692,16 @@ class WorkflowEngine:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if prompt_id or instruction_prompt_id:
+            request_payload["prompt_snapshot"] = {
+                "id": prompt_id or instruction_prompt_id,
+                "instruction_id": instruction_prompt_id or None,
+                "pack": str(node.config.get("prompt_pack", "custom")),
+                "project_override_revision": max(
+                    int(override["revision"]) if project_id and override else 0,
+                    int(instruction_override["revision"]) if project_id and instruction_prompt_id and instruction_override else 0,
+                ),
+            }
         if connection["provider_identity"] == "deepseek":
             request_payload["thinking"] = {
                 "type": "enabled" if node.config.get("thinking", False) else "disabled"

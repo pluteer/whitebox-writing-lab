@@ -7,4 +7,4 @@ def get_version() -> str:
     try:
         return str(json.loads(version_file.read_text(encoding="utf-8"))["version"])
     except (OSError, KeyError, TypeError, json.JSONDecodeError):
-        return "0.3.1"
+        return "0.4.0"

@@ -17,11 +17,11 @@ $WslProjectAlias = "/tmp/whitebox-project"
 $WslRuntimeAlias = "/tmp/whitebox-runtime"
 $WslExe = Join-Path $env:SystemRoot "System32\wsl.exe"
 $SettingsPath = Join-Path $ScriptDir "settings.json"
-$ApiUrl = "http://127.0.0.1:8000"
+$ApiUrl = "http://127.0.0.1:8001"
 $WebUrl = "http://127.0.0.1:5173"
 $StaticWebDist = Join-Path $ProjectRoot "apps\web\dist"
 $UseStaticWeb = Test-Path (Join-Path $StaticWebDist "index.html")
-$LauncherVersion = "0.3.1"
+$LauncherVersion = "0.4.0"
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $WslTempDir | Out-Null
@@ -127,7 +127,7 @@ function Start-WhiteboxServices {
         $apiLog = "$WslRuntimeAlias/api.log"
         $apiError = "$WslRuntimeAlias/api-error.log"
         $apiScript = Join-Path $WslTempDir "api-service.sh"
-        [IO.File]::WriteAllText($apiScript, "#!/usr/bin/env bash`nset -e`nln -sfn /mnt/c/Users/puruo/AI* $WslProjectAlias`nmkdir -p $WslRuntimeAlias`ncd $WslProjectAlias`necho `$`$ > $apiPid`nexport WHITEBOX_WEB_DIST=$WslProjectAlias/apps/web/dist`nexec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8000`n", [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($apiScript, "#!/usr/bin/env bash`nset -e`nln -sfn /mnt/c/Users/puruo/AI* $WslProjectAlias`nmkdir -p $WslRuntimeAlias`ncd $WslProjectAlias`necho `$`$ > $apiPid`nexport WHITEBOX_WEB_DIST=$WslProjectAlias/apps/web/dist`nexec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8001`n", [Text.UTF8Encoding]::new($false))
         $script:wslApiProcess = Start-Process -FilePath $WslExe -ArgumentList @("bash", (Convert-WindowsPathToWsl $apiScript)) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RuntimeDir "api.log") -RedirectStandardError (Join-Path $RuntimeDir "api-error.log") -PassThru
         $deadline = [DateTime]::Now.AddSeconds(25)
         while ([DateTime]::Now -lt $deadline -and -not (Test-Api)) { Start-Sleep -Milliseconds 300 }

@@ -39,8 +39,8 @@ def compile_workflow(
 
     if len(nodes_by_id) != len(workflow.nodes):
         errors.append("节点 ID 必须唯一")
-    if not workflow.nodes:
-        errors.append("工作流至少需要一个节点")
+    # An empty graph is a valid editor state, matching ComfyUI's new-workflow canvas.
+    # It cannot be executed until the user adds an output path.
     group_ids = [group.id for group in workflow.groups]
     if len(group_ids) != len(set(group_ids)):
         errors.append("Group ID 必须唯一")
@@ -231,7 +231,7 @@ def compile_workflow(
             errors.append(f"节点 {node.id} 缺少必填输入端口: {missing_required}")
 
     selected_targets = target_node_ids or [node_id for node_id, targets in outgoing.items() if not targets]
-    if not selected_targets:
+    if not selected_targets and workflow.nodes:
         errors.append("工作流至少需要一个输出目标")
     for target in selected_targets:
         if target not in nodes_by_id:

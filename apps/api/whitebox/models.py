@@ -541,6 +541,32 @@ class StatePatch(BaseModel):
 class ProjectCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    brief: str = Field(default="", max_length=20000)
+    genre: str = Field(default="", max_length=80)
+
+
+class ProjectBundleImportRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    bundle: dict[str, Any]
+
+
+class DirectorCandidatesRequest(BaseModel):
+    inspiration: str = Field(min_length=1, max_length=10000)
+    genre: str = Field(default="悬疑", max_length=80)
+    target_chapters: int = Field(default=30, ge=1, le=2000)
+
+
+class DirectorConfirmRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    candidate: dict[str, Any]
+
+
+class ChapterDraftSaveRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2_000_000)
+    expected_hash: str | None = None
+    note: str = Field(default="作者编辑稿", max_length=500)
 
 
 class Project(BaseModel):
@@ -889,6 +915,12 @@ class ProductionStageCreate(BaseModel):
 
 class BlankWorkflowCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    with_boundary_nodes: bool = True
+
+
+class PromptOverrideSave(BaseModel):
+    content: str = Field(min_length=1, max_length=50000)
+    expected_revision: int | None = Field(default=None, ge=1)
 
 
 class ProductionRunRequest(BaseModel):

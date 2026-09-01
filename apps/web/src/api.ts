@@ -32,15 +32,24 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 
 export const api = {
   getWorkflow: (id = "starter") => request<WorkflowDocument>(`/api/workflows/${id}`),
-  createBlankWorkflow: (name: string) => request<WorkflowDocument>("/api/workflows/blank", {
-    method: "POST", body: JSON.stringify({ name }),
+  createBlankWorkflow: (name: string, withBoundaryNodes = true) => request<WorkflowDocument>("/api/workflows/blank", {
+    method: "POST", body: JSON.stringify({ name, with_boundary_nodes: withBoundaryNodes }),
   }),
   getWorkflows: () => request<WorkflowDocument[]>("/api/workflows"),
+  getOfficialPromptManifest: () => request<{ id: string; revision: number; prompts: string[]; editable_prompts: string[]; workflow_revision: number }>("/api/official-prompts"),
+  getOfficialPrompt: (promptId: string) => request<{ id: string; revision: string; content: string; pack_id: string }>(`/api/official-prompts/${encodeURIComponent(promptId)}`),
+  diffPromptOverride: (projectId: string, promptId: string) => request<{ project_revision: number; official_revision: number; overridden: boolean; official_content: string; project_content: string; unified_diff: string; same: boolean }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}/diff`),
+  deletePromptOverride: (projectId: string, promptId: string, expectedRevision: number) => request<{ deleted: boolean }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}?expected_revision=${expectedRevision}`, { method: "DELETE" }),
+  getPromptOverrideVersions: (projectId: string, promptId: string) => request<Array<{ revision: number; content_hash: string; created_at: string }>>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}/versions`),
+  restorePromptOverrideVersion: (projectId: string, promptId: string, revision: number) => request<{ revision: number; content: string }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}/versions/${revision}/restore`, { method: "POST" }),
+  getPromptOverride: (projectId: string, promptId: string) => request<{ revision: number; content: string | null }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}`),
+  savePromptOverride: (projectId: string, promptId: string, content: string, expectedRevision: number | null) => request<{ revision: number; content: string }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ content, expected_revision: expectedRevision }) }),
   saveWorkflow: (workflow: WorkflowDocument) =>
     request<WorkflowDocument>(`/api/workflows/${workflow.id}`, {
       method: "PUT",
       body: JSON.stringify(workflow),
     }),
+  deleteWorkflow: (id: string) => request<void>(`/api/workflows/${id}`, { method: "DELETE" }),
   getWorkflowVersions: (id: string) => request<WorkflowVersion[]>(`/api/workflows/${id}/versions`),
   getWorkflowVersion: (id: string, revision: number) => request<WorkflowVersion>(`/api/workflows/${id}/versions/${revision}`),
   getWorkflowVersionDiff: (id: string, revision: number) => request<{ unified_diff: string; current_revision: number }>(`/api/workflows/${id}/versions/${revision}/diff`),
@@ -64,9 +73,13 @@ export const api = {
       }),
     }),
   getRun: (runId: string) => request<Run>(`/api/runs/${runId}`),
+  saveRunChapterDraft: (runId: string, content: string, expectedHash: string | null = null) => request<AssetVersion>(`/api/runs/${runId}/chapter-draft`, { method: "POST", body: JSON.stringify({ content, expected_hash: expectedHash, note: "保存作者编辑稿" }) }),
+  getRuns: (projectId?: string) => request<Run[]>(`/api/runs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
+  compareRuns: (leftId: string, rightId: string, projectId?: string) => request<{ left_run_id: string; right_run_id: string; same_graph: boolean; left_status: string; right_status: string; nodes: Array<{ node_id: string; left_status: string | null; right_status: string | null; left_attempt: number | null; right_attempt: number | null; left_artifact_id: string | null; right_artifact_id: string | null }> }>(`/api/run-comparisons?left_id=${encodeURIComponent(leftId)}&right_id=${encodeURIComponent(rightId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`),
   getEvents: (runId: string, after: number) =>
     request<RunEvent[]>(`/api/runs/${runId}/events?after=${after}`),
   cancelRun: (runId: string) => request<{ status: string }>(`/api/runs/${runId}/cancel`, { method: "POST" }),
+  resumeRun: (runId: string) => request<{ runId: string; resumedNodeId: string }>(`/api/runs/${runId}/resume`, { method: "POST" }),
   retryNode: (nodeRunId: string) =>
     request<{ runId: string }>(`/api/node-runs/${nodeRunId}/retry`, { method: "POST" }),
   retryMapItem: (nodeRunId: string) =>
@@ -104,15 +117,19 @@ export const api = {
   testProviderConnection: (id: string) => request<{ ok: boolean; models: ProviderModel[] }>(`/api/provider-connections/${id}/test`, { method: "POST" }),
   getProviderModels: (connectionId?: string) => request<ProviderModel[]>(`/api/provider-models${connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""}`),
   addProviderModel: (model: ProviderModelInput) => request<ProviderModel>("/api/provider-models", { method: "POST", body: JSON.stringify(model) }),
-  getArtifact: (artifactId: string) => request<Artifact>(`/api/artifacts/${artifactId}`),
+  getArtifact: (artifactId: string, projectId?: string) => request<Artifact>(`/api/artifacts/${artifactId}${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   getApprovals: () => request<ApprovalRecord[]>("/api/approvals"),
   decideApproval: (id: string, decision: "approved" | "rejected", note: string) =>
     request<ApprovalRecord>(`/api/approvals/${id}/decide`, {
       method: "POST", body: JSON.stringify({ decision, note, actor: "local-user" }),
     }),
   getProjects: () => request<Project[]>("/api/projects"),
-  createProject: (title: string, slug: string) => request<Project>("/api/projects", {
-    method: "POST", body: JSON.stringify({ title, slug }),
+  exportProject: (projectId: string) => request<Record<string, unknown>>(`/api/projects/${projectId}/export`),
+  importProject: (title: string, slug: string, bundle: Record<string, unknown>) => request<{ project: Project; production_canvas: ProductionCanvas; workflow_id_map: Record<string, string> }>("/api/project-bundles/import", { method: "POST", body: JSON.stringify({ title, slug, bundle }) }),
+  generateDirectorCandidates: (inspiration: string, genre = "悬疑", targetChapters = 30) => request<{ candidates: Array<Record<string, unknown>> }>("/api/director/candidates", { method: "POST", body: JSON.stringify({ inspiration, genre, target_chapters: targetChapters }) }),
+  confirmDirectorCandidate: (title: string, slug: string, candidate: Record<string, unknown>) => request<{ project: Project; candidate: Record<string, unknown> }>("/api/director/confirm", { method: "POST", body: JSON.stringify({ title, slug, candidate }) }),
+  createProject: (title: string, slug: string, brief = "", genre = "") => request<Project>("/api/projects", {
+    method: "POST", body: JSON.stringify({ title, slug, brief, genre }),
   }),
   getProductionCanvas: (projectId: string) =>
     request<ProductionCanvas>(`/api/projects/${projectId}/production-canvas`),

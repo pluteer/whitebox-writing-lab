@@ -76,6 +76,11 @@ from .models import (
     ValidationResult,
     WorkflowDocument,
     WorkflowBoundaryPort,
+    PromptOverrideSave,
+    ProjectBundleImportRequest,
+    DirectorCandidatesRequest,
+    DirectorConfirmRequest,
+    ChapterDraftSaveRequest,
 )
 from .providers import ProviderError
 from .registry import list_node_definitions
@@ -91,13 +96,25 @@ from .bundles import (
 )
 from .references import build_reference_workflow, make_reference_book, normalize_reference_text
 from .production import compose_production_canvas
+from .official_prompts import (
+    CHAPTER_ARBITER_INSTRUCTION,
+    CHAPTER_REVIEW_INSTRUCTION,
+    CHAPTER_REVISER_INSTRUCTION,
+    CHAPTER_WRITER_INSTRUCTION,
+    CHAPTER_WRITER_SYSTEM,
+    OFFICIAL_PROMPT_PACK_ID,
+    OFFICIAL_PROMPT_PACK_REVISION,
+    OFFICIAL_STAGE_PROMPT_IDS,
+    official_prompt_details,
+    official_prompt_manifest,
+)
 
 
 DEFAULT_WORKFLOW = WorkflowDocument.model_validate(
     {
         "id": "starter",
         "name": "多模型白盒起草",
-        "revision": 10,
+        "revision": 11,
         "nodes": [
             {
                 "id": "brief",
@@ -113,7 +130,10 @@ DEFAULT_WORKFLOW = WorkflowDocument.model_validate(
                     "connection_id": "deepseek-official",
                     "model": "deepseek-v4-flash",
                     "temperature": 0.8,
-                    "instruction": "写成约 600 字的悬疑小说开篇，保留任务中的全部事实。",
+                    "system_prompt": CHAPTER_WRITER_SYSTEM,
+                    "instruction": CHAPTER_WRITER_INSTRUCTION,
+                    "prompt_id": "chapter.writer.system", "prompt_pack": OFFICIAL_PROMPT_PACK_ID,
+                    "instruction_prompt_id": "chapter.writer.instruction",
                 },
             },
             {
@@ -124,7 +144,8 @@ DEFAULT_WORKFLOW = WorkflowDocument.model_validate(
                     "connection_id": "deepseek-official",
                     "model": "deepseek-v4-flash",
                     "temperature": 0.2,
-                    "instruction": "重点检查连续性、人物动机、情节逻辑和文风问题。"
+                    "instruction": CHAPTER_REVIEW_INSTRUCTION,
+                    "prompt_id": "chapter.reviewer.instruction", "prompt_pack": OFFICIAL_PROMPT_PACK_ID,
                 },
             },
             {
@@ -135,10 +156,11 @@ DEFAULT_WORKFLOW = WorkflowDocument.model_validate(
                     "connection_id": "deepseek-official",
                     "model": "deepseek-v4-flash",
                     "temperature": 0.2,
-                    "instruction": "以作品设定和可执行性为准，拒绝空泛或会破坏剧情意图的建议。"
+                    "instruction": CHAPTER_ARBITER_INSTRUCTION,
+                    "prompt_id": "chapter.arbiter.instruction", "prompt_pack": OFFICIAL_PROMPT_PACK_ID,
                 },
             },
-            {"id": "revision", "type": "writing.llm_revision", "position": {"x": 1620, "y": 170}, "config": {"connection_id": "deepseek-official", "model": "deepseek-v4-flash", "temperature": 0.5, "instruction": "保持未被裁决涉及的段落不变。"}},
+            {"id": "revision", "type": "writing.llm_revision", "position": {"x": 1620, "y": 170}, "config": {"connection_id": "deepseek-official", "model": "deepseek-v4-flash", "temperature": 0.5, "instruction": CHAPTER_REVISER_INSTRUCTION, "prompt_id": "chapter.reviser.instruction", "prompt_pack": OFFICIAL_PROMPT_PACK_ID}},
             {"id": "diff", "type": "writing.revision_diff", "position": {"x": 2000, "y": 80}, "config": {}},
             {"id": "quality", "type": "writing.quality_gate", "position": {"x": 2000, "y": 300}, "config": {}},
             {"id": "approval", "type": "core.approval", "position": {"x": 2380, "y": 190}, "config": {}},
@@ -178,8 +200,10 @@ def official_stage_workflow(
     refine_system: str,
     refine_prompt: str,
 ) -> WorkflowDocument:
+    stage_key = workflow_id.removeprefix("official-").replace("-", "_")
+    generate_prompt_id, refine_prompt_id = OFFICIAL_STAGE_PROMPT_IDS[stage_key]
     return WorkflowDocument.model_validate({
-        "id": workflow_id, "name": name, "revision": 2,
+        "id": workflow_id, "name": name, "revision": 3,
         "nodes": [
             {
                 "id": "input", "type": "workflow.input", "position": {"x": 80, "y": 180},
@@ -191,6 +215,7 @@ def official_stage_workflow(
                     "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
                     "temperature": 0.7, "system_prompt": draft_system,
                     "user_prompt": draft_prompt,
+                    "prompt_id": generate_prompt_id, "prompt_pack": OFFICIAL_PROMPT_PACK_ID,
                 },
             },
             {
@@ -199,6 +224,7 @@ def official_stage_workflow(
                     "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
                     "temperature": 0.3, "system_prompt": refine_system,
                     "user_prompt": refine_prompt,
+                    "prompt_id": refine_prompt_id, "prompt_pack": OFFICIAL_PROMPT_PACK_ID,
                 },
             },
             {
@@ -359,6 +385,36 @@ def normalize_production_layout(canvas: ProductionCanvas) -> ProductionCanvas:
     positions = {stage_id: {"x": 60 + index * 370, "y": 180} for index, stage_id in enumerate(ordered_ids)}
     updated = canvas.model_copy(deep=True)
     updated.stages = [stage.model_copy(update={"position": Position.model_validate(positions[stage.id])}) if stage.id in positions else stage for stage in updated.stages]
+    updated.revision += 1
+    return updated
+
+
+def ensure_default_production_stages(canvas: ProductionCanvas) -> ProductionCanvas:
+    """Repair older canvases that lost an official stage without touching user components."""
+    defaults = default_production_canvas(canvas.project_id)
+    existing = {stage.id for stage in canvas.stages}
+    missing = [stage for stage in defaults.stages if stage.id not in existing]
+    updated = canvas.model_copy(deep=True)
+    changed = False
+    updated.stages.extend(missing)
+    changed = bool(missing)
+    official_stage_ids = {"setup", "world", "characters", "story", "outline", "chapter", "post"}
+    core_stages = [stage for stage in updated.stages if stage.id in official_stage_ids]
+    # A legacy demo canvas could lose its built-in bindings during migration.
+    # Repair only the unmistakable all-core-empty case, never a partially
+    # customized canvas where an author intentionally chose different flows.
+    if core_stages and all(stage.workflow_id is None for stage in core_stages if stage.id != "analysis"):
+        default_by_id = {stage.id: stage for stage in defaults.stages}
+        updated.stages = [
+            stage.model_copy(update={"workflow_id": default_by_id[stage.id].workflow_id})
+            if stage.id in default_by_id and default_by_id[stage.id].workflow_id else stage
+            for stage in updated.stages
+        ]
+        changed = True
+    if not changed:
+        return canvas
+    known_edges = {edge.id for edge in updated.edges}
+    updated.edges.extend(edge for edge in defaults.edges if edge.id not in known_edges and edge.source in {item.id for item in updated.stages} and edge.target in {item.id for item in updated.stages})
     updated.revision += 1
     return updated
 
@@ -772,6 +828,47 @@ def create_app(
     def list_projects():
         return storage.list_projects()
 
+    @app.post("/api/director/candidates")
+    def generate_director_candidates(request: DirectorCandidatesRequest):
+        seed = request.inspiration.strip()
+        shared = {"inspiration": seed, "genre": request.genre, "target_chapters": request.target_chapters}
+        return {
+            "inspiration": seed, "genre": request.genre, "target_chapters": request.target_chapters,
+            "candidates": [
+                {**shared, "id": "direction-a", "title_hint": seed[:24], "promise": "以一个立即发生的核心危机开篇，在前三章建立短期目标。", "engine": "秘密逐层揭开，主角每次选择都付出代价。", "first_arc": "前五章完成冲突引爆、能力展示和第一个明确目标。"},
+                {**shared, "id": "direction-b", "title_hint": f"{request.genre}·{seed[:16]}", "promise": "以强烈的信息差和可验证的悬念驱动读者追读。", "engine": "主角掌握局部真相，却被迫进入更大的对局。", "first_arc": "前五章完成第一次反转，并留下可回收的长期伏笔。"},
+                {**shared, "id": "direction-c", "title_hint": "未命名计划", "promise": "以角色关系和利益冲突推动长篇，而不是依赖事件堆叠。", "engine": "盟友、对手和主角的目标不断交叉，关系变化必须由事件触发。", "first_arc": "前五章建立核心关系、主要限制和第一项不可逆代价。"},
+            ],
+        }
+
+    @app.post("/api/director/confirm", status_code=201)
+    def confirm_director_candidate(request: DirectorConfirmRequest):
+        candidate = request.candidate
+        required = ("id", "inspiration", "genre", "promise", "engine", "first_arc")
+        if candidate.get("id") not in {"direction-a", "direction-b", "direction-c"} or any(not isinstance(candidate.get(key), str) or not str(candidate[key]).strip() for key in required):
+            raise HTTPException(422, "导演候选结构无效")
+        if any(len(str(candidate[key])) > 10000 for key in required):
+            raise HTTPException(422, "导演候选字段过长")
+        brief = "\n".join([
+            f"# 自动导演确认方向",
+            f"\n## 原始灵感\n{candidate.get('inspiration', '')}",
+            f"\n## 题材\n{candidate.get('genre', '')}",
+            f"\n## 方向 ID\n{candidate.get('id', 'custom')}",
+            f"\n## 读者承诺\n{candidate.get('promise', '')}",
+            f"\n## 故事发动机\n{candidate.get('engine', '')}",
+            f"\n## 第一弧线\n{candidate.get('first_arc', '')}",
+        ])
+        try:
+            created = storage.create_project(str(uuid4()), ProjectCreate(title=request.title, slug=request.slug, brief=brief, genre=str(candidate.get("genre", ""))))
+        except Exception as exc:
+            raise HTTPException(409, "项目 slug 已存在") from exc
+        for directory in ("manuscript", "world", "characters", "outline", "state"):
+            (projects_root / created.slug / directory).mkdir(parents=True, exist_ok=True)
+        storage.save_production_canvas(default_production_canvas(created.id))
+        atomic_save_asset(created.id, projects_root / created.slug, "outline/author_intent.md", brief + "\n", None, "director", "确认自动导演方向")
+        atomic_save_asset(created.id, projects_root / created.slug, "state/director-state.json", json.dumps({"status": "confirmed", "candidate": candidate, "confirmed_at": datetime.now(UTC).isoformat()}, ensure_ascii=False, indent=2) + "\n", None, "director", "保存自动导演检查点")
+        return {"project": created, "candidate": candidate}
+
     @app.post("/api/projects", status_code=201)
     def create_project(project: ProjectCreate):
         try:
@@ -781,6 +878,13 @@ def create_app(
         for directory in ("manuscript", "world", "characters", "outline", "state"):
             (projects_root / created.slug / directory).mkdir(parents=True, exist_ok=True)
         storage.save_production_canvas(default_production_canvas(created.id))
+        if project.brief.strip():
+            genre_line = f"- 题材：{project.genre.strip()}\n\n" if project.genre.strip() else ""
+            atomic_save_asset(
+                created.id, projects_root / created.slug, "outline/author_intent.md",
+                f"# 创作简报\n\n{genre_line}{project.brief.strip()}\n",
+                None, "local-user", "创建项目时保存创作简报",
+            )
         return created
 
     @app.get("/api/projects/{project_id}/production-canvas")
@@ -790,7 +894,7 @@ def create_app(
         if not canvas:
             canvas = storage.save_production_canvas(default_production_canvas(project_id))
         else:
-            normalized = normalize_production_layout(canvas)
+            normalized = ensure_default_production_stages(normalize_production_layout(canvas))
             if normalized.revision != canvas.revision:
                 canvas = storage.save_production_canvas(normalized)
         if not any(stage.id == "analysis" for stage in canvas.stages):
@@ -818,6 +922,81 @@ def create_app(
             canvas.revision += 1
             canvas = storage.save_production_canvas(canvas)
         return canvas
+
+    @app.get("/api/projects/{project_id}/export")
+    def export_project_bundle(project_id: str):
+        project, root = project_root_for(project_id)
+        canvas = get_production_canvas(project_id)
+        workflow_ids = sorted({stage.workflow_id for stage in canvas.stages if stage.workflow_id})
+        workflows = [workflow for workflow_id in workflow_ids if (workflow := storage.get_workflow(workflow_id))]
+        files = []
+        for category in ("manuscript", "world", "characters", "outline", "state"):
+            directory = root / category
+            if not directory.exists():
+                continue
+            for path in sorted(directory.rglob("*")):
+                if path.is_file() and path.stat().st_size <= 2 * 1024 * 1024:
+                    try:
+                        content = path.read_text(encoding="utf-8")
+                    except UnicodeDecodeError:
+                        continue
+                    files.append({"path": path.relative_to(root).as_posix(), "content": content, "content_hash": hashlib.sha256(content.encode()).hexdigest()})
+        return {
+            "format": "whitebox.project-bundle", "version": 1,
+            "exported_at": datetime.now(UTC).isoformat(),
+            "project": project.model_dump(mode="json"),
+            "production_canvas": canvas.model_dump(mode="json"),
+            "workflows": [workflow.model_dump(mode="json") for workflow in workflows],
+            "files": files,
+        }
+
+    @app.post("/api/project-bundles/import", status_code=201)
+    def import_project_bundle(request: ProjectBundleImportRequest):
+        bundle = request.bundle
+        if bundle.get("format") != "whitebox.project-bundle" or bundle.get("version") != 1:
+            raise HTTPException(422, "不支持的项目 Bundle 格式")
+        raw_files = bundle.get("files", [])
+        raw_workflows = bundle.get("workflows", [])
+        raw_canvas = bundle.get("production_canvas")
+        if not isinstance(raw_files, list) or not isinstance(raw_workflows, list) or not isinstance(raw_canvas, dict):
+            raise HTTPException(422, "项目 Bundle 结构不完整")
+        allowed_categories = {"manuscript", "world", "characters", "outline", "state"}
+        for item in raw_files:
+            relative = str(item.get("path", ""))
+            path = Path(relative)
+            if path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] not in allowed_categories:
+                raise HTTPException(422, f"Bundle 包含不安全路径: {relative}")
+            content = str(item.get("content", ""))
+            expected = item.get("content_hash")
+            if expected and hashlib.sha256(content.encode()).hexdigest() != expected:
+                raise HTTPException(422, f"Bundle 文件哈希不匹配: {relative}")
+        parsed_workflows = [WorkflowDocument.model_validate(raw) for raw in raw_workflows]
+        bundled_ids = {workflow.id for workflow in parsed_workflows}
+        for raw_stage in raw_canvas.get("stages", []):
+            workflow_id = raw_stage.get("workflow_id")
+            if workflow_id and workflow_id not in bundled_ids and workflow_id != "starter" and not str(workflow_id).startswith("official-"):
+                raise HTTPException(422, f"Bundle 缺少 Workflow: {workflow_id}")
+        created = storage.create_project(str(uuid4()), ProjectCreate(title=request.title, slug=request.slug))
+        root = projects_root / created.slug
+        for directory in allowed_categories:
+            (root / directory).mkdir(parents=True, exist_ok=True)
+        workflow_map: dict[str, str] = {}
+        for source in parsed_workflows:
+            if source.id == "starter" or source.id.startswith("official-"):
+                workflow_map[source.id] = source.id
+                continue
+            new_id = f"project:{created.id}:{uuid4()}"
+            workflow_map[source.id] = new_id
+            storage.save_workflow(source.model_copy(update={"id": new_id, "name": f"{source.name} / 导入", "revision": 1}))
+        canvas = ProductionCanvas.model_validate(raw_canvas).model_copy(deep=True)
+        canvas.project_id = created.id
+        canvas.revision = 1
+        canvas.stages = [stage.model_copy(update={"workflow_id": workflow_map.get(stage.workflow_id, stage.workflow_id) if stage.workflow_id else None}) for stage in canvas.stages]
+        storage.save_production_canvas(canvas)
+        for item in raw_files:
+            relative = str(item["path"])
+            atomic_save_asset(created.id, root, relative, str(item.get("content", "")), None, "bundle-import", "从项目 Bundle 导入")
+        return {"project": created, "production_canvas": canvas, "workflow_id_map": workflow_map}
 
     @app.put("/api/projects/{project_id}/production-canvas")
     def save_production_canvas(project_id: str, canvas: ProductionCanvas):
@@ -1678,15 +1857,111 @@ def create_app(
     def list_workflows():
         return storage.list_workflows()
 
+    @app.get("/api/official-prompts")
+    def get_official_prompt_manifest():
+        """Expose prompt-pack identity for UI/audit clients without prompt secrets."""
+        return {
+            **official_prompt_manifest(),
+            "workflow_revision": DEFAULT_WORKFLOW.revision,
+            "pack_id": OFFICIAL_PROMPT_PACK_ID,
+            "pack_revision": OFFICIAL_PROMPT_PACK_REVISION,
+        }
+
+    @app.get("/api/official-prompts/{prompt_id}")
+    def get_official_prompt(prompt_id: str):
+        prompt = official_prompt_details().get(prompt_id)
+        if not prompt:
+            raise HTTPException(404, "官方 Prompt 不存在或暂未提供可编辑正文")
+        return {**prompt, "pack_id": OFFICIAL_PROMPT_PACK_ID}
+
+    @app.get("/api/projects/{project_id}/prompt-overrides/{prompt_id}")
+    def get_prompt_override(project_id: str, prompt_id: str):
+        project_root_for(project_id)
+        return storage.get_prompt_override(project_id, prompt_id) or {
+            "project_id": project_id, "prompt_id": prompt_id, "revision": 0,
+            "content": None, "content_hash": None,
+        }
+
+    @app.get("/api/projects/{project_id}/prompt-overrides/{prompt_id}/diff")
+    def diff_prompt_override(project_id: str, prompt_id: str):
+        project_root_for(project_id)
+        official = official_prompt_details().get(prompt_id)
+        if not official:
+            raise HTTPException(404, "该 Prompt 暂无可比较的官方正文")
+        override = storage.get_prompt_override(project_id, prompt_id)
+        current = override["content"] if override else official["content"]
+        diff = "".join(difflib.unified_diff(
+            official["content"].splitlines(keepends=True),
+            current.splitlines(keepends=True),
+            fromfile=f"official/{prompt_id}", tofile=f"project/{prompt_id}",
+        ))
+        return {
+            "prompt_id": prompt_id,
+            "official_revision": int(official["revision"]),
+            "project_revision": int(override["revision"]) if override else 0,
+            "overridden": bool(override),
+            "official_content": official["content"],
+            "project_content": current,
+            "unified_diff": diff,
+            "same": current == official["content"],
+        }
+
+    @app.get("/api/projects/{project_id}/prompt-overrides/{prompt_id}/versions")
+    def list_prompt_override_versions(project_id: str, prompt_id: str):
+        project_root_for(project_id)
+        return storage.list_prompt_override_versions(project_id, prompt_id)
+
+    @app.get("/api/projects/{project_id}/prompt-overrides/{prompt_id}/versions/compare")
+    def compare_prompt_override_versions(project_id: str, prompt_id: str, left_revision: int, right_revision: int):
+        project_root_for(project_id)
+        left = storage.get_prompt_override_version(project_id, prompt_id, left_revision)
+        right = storage.get_prompt_override_version(project_id, prompt_id, right_revision)
+        if not left or not right:
+            raise HTTPException(404, "Prompt 覆盖版本不存在")
+        return {"left_revision": left_revision, "right_revision": right_revision, "unified_diff": "".join(difflib.unified_diff(left["content"].splitlines(keepends=True), right["content"].splitlines(keepends=True), fromfile=f"v{left_revision}", tofile=f"v{right_revision}"))}
+
+    @app.post("/api/projects/{project_id}/prompt-overrides/{prompt_id}/versions/{revision}/restore")
+    def restore_prompt_override_version(project_id: str, prompt_id: str, revision: int):
+        project_root_for(project_id)
+        version = storage.get_prompt_override_version(project_id, prompt_id, revision)
+        if not version:
+            raise HTTPException(404, "Prompt 覆盖版本不存在")
+        current = storage.get_prompt_override(project_id, prompt_id)
+        return storage.save_prompt_override(project_id, prompt_id, version["content"], int(current["revision"]) if current else None)
+
+    @app.put("/api/projects/{project_id}/prompt-overrides/{prompt_id}")
+    def save_prompt_override(project_id: str, prompt_id: str, request: PromptOverrideSave):
+        project_root_for(project_id)
+        if prompt_id not in official_prompt_details():
+            raise HTTPException(404, "官方 Prompt 不存在")
+        try:
+            return storage.save_prompt_override(project_id, prompt_id, request.content, request.expected_revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/api/projects/{project_id}/prompt-overrides/{prompt_id}")
+    def delete_prompt_override(project_id: str, prompt_id: str, expected_revision: int | None = None):
+        project_root_for(project_id)
+        if prompt_id not in official_prompt_details():
+            raise HTTPException(404, "官方 Prompt 不存在")
+        try:
+            return {"deleted": storage.delete_prompt_override(project_id, prompt_id, expected_revision)}
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/workflows/blank", response_model=WorkflowDocument, status_code=201)
     def create_blank_workflow(request: BlankWorkflowCreate):
-        workflow = WorkflowDocument.model_validate({
-            "id": f"user:{uuid4()}", "name": request.name, "revision": 1,
-            "nodes": [
+        nodes = []
+        edges = []
+        if request.with_boundary_nodes:
+            nodes = [
                 {"id":"input","type":"workflow.input","position":{"x":80,"y":180},"config":{"name":"input","default":""}},
                 {"id":"output","type":"workflow.output","position":{"x":500,"y":180},"config":{"name":"output"}},
-            ],
-            "edges": [{"id":"input-output","source":"input","target":"output","source_port":"value","target_port":"value"}],
+            ]
+            edges = [{"id":"input-output","source":"input","target":"output","source_port":"value","target_port":"value"}]
+        workflow = WorkflowDocument.model_validate({
+            "id": f"user:{uuid4()}", "name": request.name, "revision": 1,
+            "nodes": nodes, "edges": edges,
         })
         validation = compile_workflow(workflow, workflow_resolver=storage.get_workflow)
         if not validation.valid:
@@ -1713,6 +1988,24 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return workflow
+
+    @app.delete("/api/workflows/{workflow_id}", status_code=204)
+    def delete_workflow(workflow_id: str):
+        if workflow_id == "starter" or workflow_id.startswith("official-"):
+            raise HTTPException(403, "官方 Workflow 不可删除")
+        workflow = storage.get_workflow(workflow_id)
+        if not workflow:
+            raise HTTPException(404, "工作流不存在")
+        references = []
+        for project in storage.list_projects():
+            canvas = storage.get_production_canvas(project.id)
+            if canvas:
+                references.extend({"project_id": project.id, "stage_id": stage.id} for stage in canvas.stages if stage.workflow_id == workflow_id)
+        body_references = [{"workflow_id": item.id, "node_id": node.id} for item in storage.list_workflows() for node in item.nodes if node.type == "flow.map" and node.config.get("body_workflow_id") == workflow_id]
+        if references or body_references:
+            raise HTTPException(409, {"message": "Workflow 仍被引用", "production_stages": references, "map_nodes": body_references})
+        storage.delete_workflow(workflow_id)
+        return None
 
     @app.get("/api/workflows/{workflow_id}/versions", response_model=list[WorkflowVersion])
     def list_workflow_versions(workflow_id: str):
@@ -1952,11 +2245,58 @@ def create_app(
             raise HTTPException(404, "运行不存在")
         return run
 
+    @app.get("/api/runs")
+    def list_runs(project_id: str | None = None, limit: int = 50):
+        if project_id:
+            project_root_for(project_id)
+        return storage.list_runs(project_id, limit)
+
+    @app.get("/api/run-comparisons")
+    def compare_runs(left_id: str, right_id: str, project_id: str | None = None):
+        left = storage.get_run(left_id)
+        right = storage.get_run(right_id)
+        if not left or not right:
+            raise HTTPException(404, "待比较的运行不存在")
+        left_project = left.snapshot.run_context.get("project_id")
+        right_project = right.snapshot.run_context.get("project_id")
+        if left_project != right_project or (project_id and left_project != project_id):
+            raise HTTPException(404, "运行不存在")
+        left_nodes = {item.node_id: item for item in left.node_runs}
+        right_nodes = {item.node_id: item for item in right.node_runs}
+        node_ids = sorted(set(left_nodes) | set(right_nodes))
+        return {
+            "left_run_id": left.id, "right_run_id": right.id,
+            "same_graph": left.graph_hash == right.graph_hash,
+            "left_status": left.status, "right_status": right.status,
+            "nodes": [{
+                "node_id": node_id,
+                "left_status": left_nodes[node_id].status if node_id in left_nodes else None,
+                "right_status": right_nodes[node_id].status if node_id in right_nodes else None,
+                "left_attempt": left_nodes[node_id].attempt if node_id in left_nodes else None,
+                "right_attempt": right_nodes[node_id].attempt if node_id in right_nodes else None,
+                "left_artifact_id": left_nodes[node_id].output_artifact_id if node_id in left_nodes else None,
+                "right_artifact_id": right_nodes[node_id].output_artifact_id if node_id in right_nodes else None,
+            } for node_id in node_ids],
+        }
+
     @app.get("/api/runs/{run_id}/events")
     def get_run_events(run_id: str, after: int = 0):
         if not storage.get_run(run_id):
             raise HTTPException(404, "运行不存在")
         return storage.list_events(run_id, after)
+
+    @app.post("/api/runs/{run_id}/chapter-draft")
+    def save_run_chapter_draft(run_id: str, request: ChapterDraftSaveRequest):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(404, "运行不存在")
+        context = run.snapshot.run_context
+        project_id = context.get("project_id")
+        chapter_number = int(context.get("chapter_number", 1))
+        if not project_id:
+            raise HTTPException(422, "运行缺少项目上下文")
+        _, root = project_root_for(str(project_id))
+        return atomic_save_asset(str(project_id), root, f"outline/chapter-drafts/chapter-{chapter_number:04d}.md", request.content, request.expected_hash, "local-user", request.note)
 
     @app.post("/api/runs/{run_id}/cancel", status_code=202)
     async def cancel_run(run_id: str) -> dict[str, str]:
@@ -1964,6 +2304,20 @@ def create_app(
             raise HTTPException(404, "运行不存在")
         await engine.cancel(run_id)
         return {"status": "cancelling"}
+
+    @app.post("/api/runs/{run_id}/resume", status_code=202)
+    async def resume_run(run_id: str):
+        run = storage.get_run(run_id)
+        if not run:
+            raise HTTPException(404, "运行不存在")
+        failed = next((item for item in run.node_runs if item.status in {"failed", "cancelled", "interrupted"}), None)
+        if not failed:
+            raise HTTPException(409, "该运行没有可恢复的失败节点")
+        try:
+            resumed_id = await engine.retry(failed.id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return {"runId": resumed_id, "resumedNodeId": failed.node_id}
 
     @app.get("/api/node-runs/{node_run_id}/attempts")
     def get_node_attempts(node_run_id: str):
@@ -2024,10 +2378,14 @@ def create_app(
         return {"runId": run_id, "itemId": node_run.node_id.split("/", 1)[0]}
 
     @app.get("/api/artifacts/{artifact_id}")
-    def get_artifact(artifact_id: str):
+    def get_artifact(artifact_id: str, project_id: str | None = None):
         artifact = storage.get_artifact(artifact_id)
         if not artifact:
             raise HTTPException(404, "产物不存在")
+        if project_id:
+            run = storage.get_run(artifact.run_id)
+            if not run or run.snapshot.run_context.get("project_id") != project_id:
+                raise HTTPException(404, "产物不存在")
         return artifact
 
     @app.websocket("/api/runs/{run_id}/events")

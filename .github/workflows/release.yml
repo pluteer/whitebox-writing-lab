@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install build tools
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".\apps\api[dev]" pyinstaller
+          choco install innosetup --yes --no-progress
+      - name: Build portable archive and installer
+        shell: powershell
+        run: .\installer\构建便携包.ps1
+      - name: Collect release artifacts
+        shell: powershell
+        run: |
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+          Copy-Item "packaging\whitebox-writing-portable-$version.zip" release-artifacts
+          Copy-Item "installer\Output\Whitebox-Writing-$version-Setup.exe" release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-release-artifacts
+          path: release-artifacts/*
+
+  sign-and-release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-release-artifacts
+          path: release-artifacts
+      - name: Install Sigstore verifier
+        run: python -m pip install --disable-pip-version-check sigstore
+      - name: Generate SHA256 checksums
+        run: |
+          cd release-artifacts
+          sha256sum * > SHA256SUMS
+      - name: Sign release artifacts with Sigstore keyless signing
+        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        with:
+          inputs: >-
+            ./release-artifacts/*.zip
+            ./release-artifacts/*.exe
+            ./release-artifacts/SHA256SUMS
+          verify: true
+          verify-cert-identity: https://github.com/pluteer/whitebox-writing-lab/.github/workflows/release.yml@${{ github.ref }}
+          verify-oidc-issuer: https://token.actions.githubusercontent.com
+      - name: Verify Sigstore bundles before publishing
+        run: python tools/verify_sigstore_release.py release-artifacts --verify-signatures --certificate-identity "https://github.com/pluteer/whitebox-writing-lab/.github/workflows/release.yml@${GITHUB_REF}"
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          body_path: docs/RELEASE_NOTES_0.4.0.md
+          files: release-artifacts/*
