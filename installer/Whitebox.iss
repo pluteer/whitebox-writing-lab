@@ -2,7 +2,7 @@
 ; The application remains local and uses the user's existing WSL runtime.
 
 #define AppName "Whitebox Writing"
-#define AppVersion "0.4.2"
+#define AppVersion "0.4.3"
 #define Publisher "Whitebox"
 #define LauncherDir "..\launcher"
 #define ProjectRoot ".."

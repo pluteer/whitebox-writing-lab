@@ -52,7 +52,10 @@ jobs:
           name: unsigned-release-artifacts
           path: release-artifacts
       - name: Install Sigstore verifier
-        run: python -m pip install --disable-pip-version-check sigstore
+        run: |
+          python -m venv .sigstore-venv
+          .sigstore-venv/bin/python -m pip install --disable-pip-version-check sigstore
+          echo "$PWD/.sigstore-venv/bin" >> "$GITHUB_PATH"
       - name: Generate SHA256 checksums
         run: |
           cd release-artifacts
@@ -73,5 +76,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          body_path: docs/RELEASE_NOTES_0.4.2.md
+          body_path: docs/RELEASE_NOTES_0.4.3.md
           files: release-artifacts/*
