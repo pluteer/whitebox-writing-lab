@@ -78,7 +78,7 @@ jobs:
           )
           foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path)) { throw "Missing artifact: $path" } }
           $list = tar.exe -tf ".\packaging\whitebox-writing-portable-$version.zip"
-          foreach ($entry in @('runtime/api/whitebox-api.exe', 'runtime/web/index.html', 'Whitebox.exe', 'StartWhiteboxPortable.bat', 'StopWhitebox.bat', '使用说明.txt', 'version.json', 'LICENSE')) {
+          foreach ($entry in @('runtime/api/whitebox-api.exe', 'runtime/web/index.html', 'Whitebox.exe', 'StartWhiteboxPortable.bat', 'StopWhitebox.bat', 'QQ-README.txt', 'version.json', 'LICENSE')) {
             if ($list -notcontains $entry) { throw "Portable archive is missing $entry" }
           }
           $scripts = @('launcher/WhiteboxLauncher.ps1', 'installer/BuildPortable.ps1', 'installer/构建便携包.ps1')
