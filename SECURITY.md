@@ -17,6 +17,6 @@ Provider 密钥只应保存在本机 `data/provider-secrets.json` 或环境变�
 
 ## Release signatures
 
-`v0.4.0` 起，Windows 安装包、便携包和 `SHA256SUMS` 使用 Sigstore keyless signing。签名身份由 GitHub Actions OIDC 和 Fulcio 短期证书绑定到本仓库的 `.github/workflows/release.yml`，并写入透明日志。每个发布文件必须同时带有 `<filename>.sigstore.json`；缺少 bundle 的文件不是正式发布产物。
+`v0.4.1` 起，Windows 安装包、便携包和 `SHA256SUMS` 使用 Sigstore keyless signing。签名身份由 GitHub Actions OIDC 和 Fulcio 短期证书绑定到本仓库的 `.github/workflows/release.yml`，并写入透明日志。每个发布文件必须同时带有 `<filename>.sigstore.json`；缺少 bundle 的文件不是正式发布产物。
 
 Sigstore 证明软件供应链来源和文件完整性，不等同于 Windows Authenticode。Windows 资源管理器可能仍显示“未知发布者”；用户应按 [`docs/SIGSTORE.md`](docs/SIGSTORE.md) 验证发布材料。
