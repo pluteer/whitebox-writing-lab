@@ -25,14 +25,14 @@ SHA256SUMS.sigstore.json
 python -m pip install sigstore
 ```
 
-验证下载文件。将 `<tag>` 替换为实际 tag，例如 `v0.4.1`：
+验证下载文件。将 `<tag>` 替换为实际 tag，例如 `v0.4.2`：
 
 ```bash
 python -m sigstore verify identity \
-  --bundle whitebox-writing-portable-0.4.1.zip.sigstore.json \
+  --bundle whitebox-writing-portable-0.4.2.zip.sigstore.json \
   --cert-identity "https://github.com/pluteer/whitebox-writing-lab/.github/workflows/release.yml@refs/tags/<tag>" \
   --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-  whitebox-writing-portable-0.4.1.zip
+  whitebox-writing-portable-0.4.2.zip
 ```
 
 安装包验证方式相同，只需替换文件名和 bundle。
@@ -46,7 +46,7 @@ sha256sum --check SHA256SUMS
 Windows PowerShell 可以先查看文件哈希：
 
 ```powershell
-Get-FileHash .\Whitebox-Writing-0.4.1-Setup.exe -Algorithm SHA256
+Get-FileHash .\Whitebox-Writing-0.4.2-Setup.exe -Algorithm SHA256
 Get-Content .\SHA256SUMS
 ```
 

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 
@@ -36,9 +36,13 @@ def main() -> int:
             if not args.certificate_identity:
                 errors.append("--certificate-identity is required with --verify-signatures")
                 continue
+            sigstore = shutil.which("sigstore")
+            if not sigstore:
+                errors.append("sigstore CLI is not installed or not on PATH")
+                continue
             result = subprocess.run(
                 [
-                    sys.executable, "-m", "sigstore", "verify", "identity",
+                    sigstore, "verify", "identity",
                     "--bundle", str(bundle),
                     "--cert-identity", args.certificate_identity,
                     "--cert-oidc-issuer", args.oidc_issuer,

@@ -23,7 +23,7 @@ def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
         info = client.get("/api/runtime-info")
 
     assert info.status_code == 200
-    assert info.json()["version"] == "0.4.1"
+    assert info.json()["version"] == "0.4.2"
     assert info.json()["mode"] == "development"
     assert info.json()["database_path"] == str(database)
     assert info.json()["secrets_path"] == str(secrets)
