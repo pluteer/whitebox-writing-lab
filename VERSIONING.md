@@ -16,6 +16,7 @@
 
 ```bash
 python tools/check_version.py
+python tools/check_version.py --tag v0.4.3
 ```
 
 检查通过后再提交代码、创建 Git tag 和发布 Release。

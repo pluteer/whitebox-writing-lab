@@ -30,6 +30,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#ProjectRoot}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\version.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ProjectRoot}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectRoot}\package.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectRoot}\package-lock.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ProjectRoot}\apps\api\pyproject.toml"; DestDir: "{app}\apps\api"; Flags: ignoreversion
@@ -48,6 +50,10 @@ Source: "{#ProjectRoot}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion rec
 Source: "{#ProjectRoot}\installer\Whitebox.iss"; DestDir: "{app}\installer"; Flags: ignoreversion
 Source: "{#ProjectRoot}\installer\构建安装包.bat"; DestDir: "{app}\installer"; Flags: ignoreversion
 
+[Dirs]
+; User-created databases, provider credentials, and projects survive uninstall.
+Name: "{app}\data"; Flags: uninsneveruninstall
+
 [Icons]
 Name: "{autodesktop}\Whitebox Writing"; Filename: "{app}\launcher\启动Whitebox.bat"; WorkingDir: "{app}\launcher"; Comment: "Local Whitebox AI writing workflow"
 Name: "{group}\Whitebox Writing"; Filename: "{app}\launcher\启动Whitebox.bat"; WorkingDir: "{app}\launcher"; Comment: "Local Whitebox AI writing workflow"
@@ -62,3 +68,4 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\launcher\runtime"
 Type: filesandordirs; Name: "{app}\launcher\settings.json"
+; Deliberately do not delete {app}\data. Users must remove it manually after backup.

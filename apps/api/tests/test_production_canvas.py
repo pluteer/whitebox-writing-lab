@@ -55,6 +55,51 @@ def test_component_parameters_are_applied_to_composed_node() -> None:
     assert composed.nodes[0].config["text"] == "bright"
 
 
+def test_composition_supports_same_workflow_at_different_revisions() -> None:
+    first = WorkflowDocument.model_validate({
+        "id": "shared", "name": "v1", "revision": 1,
+        "nodes": [{"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "v1"}}],
+        "edges": [],
+    })
+    second = first.model_copy(deep=True, update={"revision": 2})
+    second.nodes[0].config["text"] = "v2"
+    canvas = ProductionCanvas(project_id="p", stages=[
+        ProductionStage(id="a", title="A", description="", position=Position(x=0, y=0), workflow_id="shared", workflow_revision=1),
+        ProductionStage(id="b", title="B", description="", position=Position(x=300, y=0), workflow_id="shared", workflow_revision=2),
+    ], edges=[])
+
+    composed = compose_production_canvas(canvas, {"a": first, "b": second}, "p")
+
+    assert {node.id: node.config["text"] for node in composed.nodes} == {
+        "component/a/source": "v1", "component/b/source": "v2",
+    }
+
+
+def test_composition_uses_actual_leaf_as_implicit_output() -> None:
+    workflow = WorkflowDocument.model_validate({
+        "id": "leaf", "name": "leaf", "revision": 1,
+        "nodes": [
+            {"id": "source", "type": "mock.source", "position": {"x": 0, "y": 0}, "config": {"text": "x"}},
+            {"id": "rewrite", "type": "mock.rewrite", "position": {"x": 100, "y": 0}, "config": {"instruction": "y"}},
+        ],
+        "edges": [{"id": "edge", "source": "source", "target": "rewrite"}],
+    })
+    target = WorkflowDocument.model_validate({
+        "id": "target", "name": "target", "revision": 1,
+        "nodes": [{"id": "input", "type": "workflow.input", "position": {"x": 0, "y": 0}, "config": {"name": "input"}}],
+        "edges": [],
+    })
+    canvas = ProductionCanvas(project_id="p", stages=[
+        ProductionStage(id="a", title="A", description="", position=Position(x=0, y=0), workflow_id="leaf"),
+        ProductionStage(id="b", title="B", description="", position=Position(x=300, y=0), workflow_id="target"),
+    ], edges=[{"id": "ab", "source": "a", "target": "b"}])
+
+    composed = compose_production_canvas(canvas, {"a": workflow, "b": target}, "p")
+    boundary = next(edge for edge in composed.edges if edge.id == "production/ab")
+
+    assert boundary.source == "component/a/rewrite"
+
+
 def test_production_stage_binding_and_status(tmp_path) -> None:
     app = create_app(tmp_path / "production-status.db", DeepSeekProvider(api_key="test"))
     with TestClient(app) as client:
@@ -272,3 +317,28 @@ def test_production_preflight_requires_explicit_side_effect_permission(tmp_path)
     assert preflight.json()["valid"] is False
     assert blocked.status_code == 409
     assert allowed.json()["valid"] is True
+
+
+def test_production_run_injects_current_project_archive_path(tmp_path) -> None:
+    app = create_app(
+        tmp_path / "production-archive.db", DeepSeekProvider(api_key="test"),
+        project_root=tmp_path / "projects",
+    )
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "归档书", "slug": "archive-book"}).json()
+        canvas = client.get(f"/api/projects/{project['id']}/production-canvas").json()
+        canvas["stages"] = [stage for stage in canvas["stages"] if stage["id"] == "chapter"]
+        canvas["edges"] = []
+        assert client.put(f"/api/projects/{project['id']}/production-canvas", json=canvas).status_code == 200
+        response = client.post("/api/production-runs", json={
+            "project_id": project["id"], "chapter_number": 9,
+            "allow_side_effects": True,
+        })
+        run = client.get(f"/api/runs/{response.json()['runId']}").json()
+
+    archive = next(
+        node for node in run["snapshot"]["nodes"]
+        if node["type"] == "writing.chapter_archive"
+    )
+    assert archive["config"]["chapter_path"] == "archive-book/manuscript/chapter-0009.md"
+    assert archive["config"]["project_id"] == project["id"]

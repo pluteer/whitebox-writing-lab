@@ -11,6 +11,10 @@ from .models import ProviderUsage
 
 
 DeltaHandler = Callable[[str], Awaitable[None]]
+MAX_PROVIDER_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_PROVIDER_CHUNK_BYTES = 1024 * 1024
+MAX_PROVIDER_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_PROVIDER_CHUNKS = 10_000
 
 
 class ProviderError(RuntimeError):
@@ -48,7 +52,7 @@ class OpenAICompatibleProvider:
         transport: httpx.AsyncBaseTransport | None = None,
         supports_deepseek_thinking: bool = False,
     ) -> None:
-        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.transport = transport
         self.supports_deepseek_thinking = supports_deepseek_thinking
@@ -95,15 +99,15 @@ class OpenAICompatibleProvider:
 
     async def _get_json(self, path: str) -> dict:
         if not self.api_key:
-            raise ProviderError("未配置 DEEPSEEK_API_KEY", code="missing_api_key")
+            raise ProviderError("未配置供应商 API Key", code="missing_api_key")
         headers = {"Authorization": f"Bearer {self.api_key}"}
         async with httpx.AsyncClient(
-            base_url=self.base_url,
+            base_url=f"{self.base_url}/",
             timeout=httpx.Timeout(30, connect=10),
             transport=self.transport,
         ) as client:
             try:
-                response = await client.get(path, headers=headers)
+                response = await client.get(path.lstrip("/"), headers=headers)
             except httpx.HTTPError as exc:
                 raise ProviderError(f"模型供应商网络请求失败: {exc}", code="network_error") from exc
         if response.status_code >= 400:
@@ -131,7 +135,7 @@ class OpenAICompatibleProvider:
         on_delta: DeltaHandler,
     ) -> ProviderResult:
         if not self.api_key:
-            raise ProviderError("未配置 DEEPSEEK_API_KEY", code="missing_api_key")
+            raise ProviderError("未配置供应商 API Key", code="missing_api_key")
 
         payload = {
             "model": model,
@@ -143,7 +147,10 @@ class OpenAICompatibleProvider:
         }
         if self.supports_deepseek_thinking:
             payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+        if len(json.dumps(payload, ensure_ascii=False).encode()) > MAX_PROVIDER_REQUEST_BYTES:
+            raise ProviderError("模型请求载荷超过 2 MB 限制", code="request_too_large")
         chunks: list[dict] = []
+        response_bytes = 0
         text_parts: list[str] = []
         finish_reason: str | None = None
         usage = ProviderUsage()
@@ -152,11 +159,11 @@ class OpenAICompatibleProvider:
 
         timeout = httpx.Timeout(120, connect=15)
         async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=timeout, transport=self.transport
+            base_url=f"{self.base_url}/", timeout=timeout, transport=self.transport
         ) as client:
             try:
                 async with client.stream(
-                    "POST", "/chat/completions", headers=headers, json=payload
+                    "POST", "chat/completions", headers=headers, json=payload
                 ) as response:
                     request_id = response.headers.get("x-request-id")
                     if response.status_code >= 400:
@@ -172,15 +179,21 @@ class OpenAICompatibleProvider:
                         raise ProviderError(message, status_code=response.status_code, code=code)
 
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
                             continue
-                        data = line[6:]
+                        data = line[5:].lstrip()
                         if data == "[DONE]":
                             break
                         try:
                             chunk = json.loads(data)
                         except json.JSONDecodeError as exc:
                             raise ProviderError("模型供应商返回了无效的流式 JSON", code="invalid_stream") from exc
+                        chunk_bytes = len(data.encode())
+                        response_bytes += chunk_bytes
+                        if chunk_bytes > MAX_PROVIDER_CHUNK_BYTES:
+                            raise ProviderError("模型流式分块超过 1 MB 限制", code="chunk_too_large")
+                        if len(chunks) >= MAX_PROVIDER_CHUNKS or response_bytes > MAX_PROVIDER_RESPONSE_BYTES:
+                            raise ProviderError("模型流式响应超过大小限制", code="response_too_large")
                         chunks.append(chunk)
                         if not request_id:
                             request_id = chunk.get("id")
@@ -221,5 +234,9 @@ class DeepSeekProvider(OpenAICompatibleProvider):
     provider = "deepseek"
 
     def __init__(self, *args, **kwargs):
+        if args and args[0] is None:
+            args = (os.getenv("DEEPSEEK_API_KEY"), *args[1:])
+        elif not args and kwargs.get("api_key") is None:
+            kwargs["api_key"] = os.getenv("DEEPSEEK_API_KEY")
         kwargs["supports_deepseek_thinking"] = True
         super().__init__(*args, **kwargs)

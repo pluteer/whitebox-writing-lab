@@ -12,9 +12,7 @@ $ErrorActionPreference = "Stop"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $RuntimeDir = Join-Path $ScriptDir "runtime"
-$WslTempDir = Join-Path $env:WINDIR "Temp\WhiteboxLauncher"
-$WslProjectAlias = "/tmp/whitebox-project"
-$WslRuntimeAlias = "/tmp/whitebox-runtime"
+$WslTempDir = Join-Path ([IO.Path]::GetTempPath()) ("WhiteboxLauncher-" + [Guid]::NewGuid().ToString("N"))
 $WslExe = Join-Path $env:SystemRoot "System32\wsl.exe"
 $SettingsPath = Join-Path $ScriptDir "settings.json"
 $ApiUrl = "http://127.0.0.1:8001"
@@ -25,6 +23,12 @@ $LauncherVersion = "0.4.3"
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $WslTempDir | Out-Null
+Register-EngineEvent PowerShell.Exiting -MessageData $WslTempDir -Action { Remove-Item $event.MessageData -Recurse -Force -ErrorAction SilentlyContinue } | Out-Null
+if ($env:OS -eq "Windows_NT") {
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    & icacls.exe $WslTempDir /inheritance:r /grant:r "*$sid`:(OI)(CI)F" "*S-1-5-18`:(OI)(CI)F" /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "无法保护启动器临时目录 ACL。" }
+}
 
 function Convert-WindowsPathToWsl([string]$Value) {
     $fullPath = [IO.Path]::GetFullPath($Value)
@@ -32,16 +36,17 @@ function Convert-WindowsPathToWsl([string]$Value) {
     return "/mnt/$($Matches[1].ToLowerInvariant())/$($Matches[2].Replace('\', '/'))"
 }
 
-function Convert-WslLiteral([string]$Value) {
-    # WSL can resolve a Windows path through /mnt without re-encoding it.
-    # Keep all paths quoted in the generated script.
-    return (Convert-WindowsPathToWsl $Value)
+function ConvertTo-BashLiteral([string]$Value) {
+    return "'" + $Value.Replace("'", "'`"'`"'") + "'"
 }
+
+$WslProjectPath = ConvertTo-BashLiteral (Convert-WindowsPathToWsl $ProjectRoot)
+$WslRuntimePath = ConvertTo-BashLiteral (Convert-WindowsPathToWsl $RuntimeDir)
 
 function Invoke-WslScript([string]$Body, [int]$TimeoutMs = 15000) {
     $scriptPath = Join-Path $WslTempDir ("command-" + [Guid]::NewGuid().ToString("N") + ".sh")
     $wslScriptPath = Convert-WindowsPathToWsl $scriptPath
-    [IO.File]::WriteAllText($scriptPath, "#!/usr/bin/env bash`nset +e`nln -sfn /mnt/c/Users/puruo/AI* $WslProjectAlias`nmkdir -p $WslRuntimeAlias`n$Body`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($scriptPath, "#!/usr/bin/env bash`nset -euo pipefail`nmkdir -p -- $WslRuntimePath`n$Body`n", [Text.UTF8Encoding]::new($false))
     try {
         $info = [Diagnostics.ProcessStartInfo]::new()
         $info.FileName = $WslExe
@@ -92,11 +97,9 @@ function Test-WebUi {
 }
 
 function Get-WslProjectPath {
-    # Use an ASCII glob. WSL interop on some Windows locales corrupts CJK
-    # characters when they are embedded in a command-line argument.
-    return $WslProjectAlias
+    return $WslProjectPath
 }
-function Get-WslPidPath([string]$Name) { return "$WslRuntimeAlias/$Name.pid" }
+function Get-WslPidPath([string]$Name) { return "$WslRuntimePath/$Name.pid" }
 
 function Get-EnvironmentState {
     $state = [ordered]@{ Wsl = $false; Python = $false; Node = $false; Npm = $false; ApiEnvironment = $false; WebDependencies = $false; StaticWeb = $UseStaticWeb; Ready = $false; Message = "" }
@@ -124,39 +127,41 @@ function Start-WhiteboxServices {
     $apiPid = Get-WslPidPath "api"
     $webPid = Get-WslPidPath "web"
     if (-not (Test-Api)) {
-        $apiLog = "$WslRuntimeAlias/api.log"
-        $apiError = "$WslRuntimeAlias/api-error.log"
-        $apiScript = Join-Path $WslTempDir "api-service.sh"
-        [IO.File]::WriteAllText($apiScript, "#!/usr/bin/env bash`nset -e`nln -sfn /mnt/c/Users/puruo/AI* $WslProjectAlias`nmkdir -p $WslRuntimeAlias`ncd $WslProjectAlias`necho `$`$ > $apiPid`nexport WHITEBOX_WEB_DIST=$WslProjectAlias/apps/web/dist`nexec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8001`n", [Text.UTF8Encoding]::new($false))
-        $script:wslApiProcess = Start-Process -FilePath $WslExe -ArgumentList @("bash", (Convert-WindowsPathToWsl $apiScript)) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RuntimeDir "api.log") -RedirectStandardError (Join-Path $RuntimeDir "api-error.log") -PassThru
-        $deadline = [DateTime]::Now.AddSeconds(25)
-        while ([DateTime]::Now -lt $deadline -and -not (Test-Api)) { Start-Sleep -Milliseconds 300 }
+        $apiScript = Join-Path $WslTempDir ("api-service-" + [Guid]::NewGuid().ToString("N") + ".sh")
+        [IO.File]::WriteAllText($apiScript, "#!/usr/bin/env bash`nset -euo pipefail`nmkdir -p -- $WslRuntimePath`ncd -- $project`nprintf '%s\n' `$`$ > $apiPid`nexport WHITEBOX_WEB_DIST=$project/apps/web/dist`nexec apps/api/.venv/bin/python -m uvicorn whitebox.main:app --app-dir apps/api --host 127.0.0.1 --port 8001`n", [Text.UTF8Encoding]::new($false))
+        try {
+            $script:wslApiProcess = Start-Process -FilePath $WslExe -ArgumentList @("bash", (Convert-WindowsPathToWsl $apiScript)) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RuntimeDir "api.log") -RedirectStandardError (Join-Path $RuntimeDir "api-error.log") -PassThru
+            $deadline = [DateTime]::Now.AddSeconds(25)
+            while ([DateTime]::Now -lt $deadline -and -not (Test-Api)) { Start-Sleep -Milliseconds 300 }
+        } finally { Remove-Item $apiScript -Force -ErrorAction SilentlyContinue }
         if (-not (Test-Api)) { throw "API 启动失败，请查看 launcher/runtime/api-error.log。" }
     }
     if (-not $UseStaticWeb -and -not (Test-WebUi)) {
-        $webLog = "$WslRuntimeAlias/web.log"
-        $webError = "$WslRuntimeAlias/web-error.log"
-        $webScript = Join-Path $WslTempDir "web-service.sh"
-        [IO.File]::WriteAllText($webScript, "#!/usr/bin/env bash`nset -e`nln -sfn /mnt/c/Users/puruo/AI* $WslProjectAlias`nmkdir -p $WslRuntimeAlias`ntest -s `$HOME/.nvm/nvm.sh && . `$HOME/.nvm/nvm.sh || true`ncd $WslProjectAlias`necho `$`$ > $webPid`nexec npm run dev:web -- --host 127.0.0.1 --port 5173`n", [Text.UTF8Encoding]::new($false))
-        $script:wslWebProcess = Start-Process -FilePath $WslExe -ArgumentList @("bash", (Convert-WindowsPathToWsl $webScript)) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RuntimeDir "web.log") -RedirectStandardError (Join-Path $RuntimeDir "web-error.log") -PassThru
-        $deadline = [DateTime]::Now.AddSeconds(35)
-        while ([DateTime]::Now -lt $deadline -and -not (Test-WebUi)) { Start-Sleep -Milliseconds 300 }
+        $webScript = Join-Path $WslTempDir ("web-service-" + [Guid]::NewGuid().ToString("N") + ".sh")
+        [IO.File]::WriteAllText($webScript, "#!/usr/bin/env bash`nset -euo pipefail`ntest -s `$HOME/.nvm/nvm.sh && . `$HOME/.nvm/nvm.sh || true`nmkdir -p -- $WslRuntimePath`ncd -- $project`nprintf '%s\n' `$`$ > $webPid`nexec npm run dev:web -- --host 127.0.0.1 --port 5173`n", [Text.UTF8Encoding]::new($false))
+        try {
+            $script:wslWebProcess = Start-Process -FilePath $WslExe -ArgumentList @("bash", (Convert-WindowsPathToWsl $webScript)) -WindowStyle Hidden -RedirectStandardOutput (Join-Path $RuntimeDir "web.log") -RedirectStandardError (Join-Path $RuntimeDir "web-error.log") -PassThru
+            $deadline = [DateTime]::Now.AddSeconds(35)
+            while ([DateTime]::Now -lt $deadline -and -not (Test-WebUi)) { Start-Sleep -Milliseconds 300 }
+        } finally { Remove-Item $webScript -Force -ErrorAction SilentlyContinue }
         if (-not (Test-WebUi)) { throw "Web UI 启动失败，请查看 launcher/runtime/web-error.log。" }
     }
 }
 
 function Stop-WhiteboxServices {
-    $project = Get-WslProjectPath
+    if (-not (Test-Path (Join-Path $RuntimeDir "api.pid")) -and -not (Test-Path (Join-Path $RuntimeDir "web.pid"))) { return }
+    $apiPid = Get-WslPidPath "api"
+    $webPid = Get-WslPidPath "web"
     # Do not use pkill here: its pattern can match the temporary launcher
     # shell itself and terminate the WSL command before cleanup completes.
-    $stopScript = "if test -f '$WslRuntimeAlias/api.pid'; then kill `$(cat '$WslRuntimeAlias/api.pid') 2>/dev/null || true; fi; if test -f '$WslRuntimeAlias/web.pid'; then kill `$(cat '$WslRuntimeAlias/web.pid') 2>/dev/null || true; fi; rm -f '$WslRuntimeAlias/api.pid' '$WslRuntimeAlias/web.pid'"
+    $stopScript = "if test -f $apiPid; then kill `$(cat $apiPid) 2>/dev/null || true; fi; if test -f $webPid; then kill `$(cat $webPid) 2>/dev/null || true; fi; rm -f -- $apiPid $webPid"
     Invoke-WslScript $stopScript -TimeoutMs 20000 | Out-Null
     Remove-Item (Join-Path $RuntimeDir "api.pid"), (Join-Path $RuntimeDir "web.pid") -Force -ErrorAction SilentlyContinue
 }
 
 function Install-WhiteboxDependencies {
     $project = Get-WslProjectPath
-    $log = "$WslRuntimeAlias/install.log"
+    $log = "$WslRuntimePath/install.log"
     Invoke-WslScript "test -s `$HOME/.nvm/nvm.sh && . `$HOME/.nvm/nvm.sh || true; cd $project || exit 2; if ! test -x apps/api/.venv/bin/python; then python3 -m venv apps/api/.venv || exit 3; fi; { apps/api/.venv/bin/pip install -e 'apps/api[dev]' && npm ci; } >$log 2>&1" -TimeoutMs 120000 | Out-Null
 }
 

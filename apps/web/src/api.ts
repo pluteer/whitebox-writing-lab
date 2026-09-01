@@ -1,12 +1,17 @@
 import type { ApprovalRecord, Artifact, AssetCategory, AssetVersion, AssetVersionDiff, ChapterHistoryItem, DeepSeekBalance, MapRunSummary, ModelProfile, ModelProfileInput, NodeAttempt, NodeDefinition, NodeSkillTemplate, ProductionCanvas, ProductionStage, ProductionStageStatus, ProductionPreflight, Project, ProjectAsset, ProjectAssetContent, ProviderCall, ProviderConnection, ProviderConnectionInput, ProviderModel, ProviderModelInput, ProviderStatus, ReferenceBook, Run, RunEvent, Skill, SkillBindingInput, SkillBundleImportPreview, StatePatchPreview, SubflowDefinition, WorkflowDocument, WorkflowNode, WorkflowEdge, WorkflowTemplateImportPreview, WorkflowVersion } from "./types";
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+export async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 30_000);
+  let timedOut = false;
+  const timeout = globalThis.setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
+  const externalSignal = options?.signal;
+  const abortFromExternal = () => controller.abort(externalSignal?.reason);
+  if (externalSignal?.aborted) abortFromExternal();
+  else externalSignal?.addEventListener("abort", abortFromExternal, { once: true });
   try {
     const response = await fetch(url, {
       ...options,
-      signal: options?.signal ?? controller.signal,
+      signal: controller.signal,
       cache: "no-store",
       headers: { "Content-Type": "application/json", ...options?.headers },
     });
@@ -21,12 +26,13 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     }
     return response.json() as Promise<T>;
   } catch (reason) {
-    if (reason instanceof DOMException && reason.name === "AbortError") {
+    if (reason instanceof DOMException && reason.name === "AbortError" && timedOut) {
       throw new Error(`请求超时：${url}`);
     }
     throw reason;
   } finally {
-    window.clearTimeout(timeout);
+    globalThis.clearTimeout(timeout);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
   }
 }
 
@@ -45,7 +51,7 @@ export const api = {
   getPromptOverride: (projectId: string, promptId: string) => request<{ revision: number; content: string | null }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}`),
   savePromptOverride: (projectId: string, promptId: string, content: string, expectedRevision: number | null) => request<{ revision: number; content: string }>(`/api/projects/${projectId}/prompt-overrides/${encodeURIComponent(promptId)}`, { method: "PUT", body: JSON.stringify({ content, expected_revision: expectedRevision }) }),
   saveWorkflow: (workflow: WorkflowDocument) =>
-    request<WorkflowDocument>(`/api/workflows/${workflow.id}`, {
+    request<WorkflowDocument>(`/api/workflows/${workflow.id}?expected_revision=${workflow.revision - 1}`, {
       method: "PUT",
       body: JSON.stringify(workflow),
     }),
@@ -72,24 +78,24 @@ export const api = {
         chapter_number: chapterNumber, message,
       }),
     }),
-  getRun: (runId: string) => request<Run>(`/api/runs/${runId}`),
+  getRun: (runId: string, projectId: string) => request<Run>(`/api/runs/${runId}?project_id=${encodeURIComponent(projectId)}`),
   saveRunChapterDraft: (runId: string, content: string, expectedHash: string | null = null) => request<AssetVersion>(`/api/runs/${runId}/chapter-draft`, { method: "POST", body: JSON.stringify({ content, expected_hash: expectedHash, note: "保存作者编辑稿" }) }),
   getRuns: (projectId?: string) => request<Run[]>(`/api/runs${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
   compareRuns: (leftId: string, rightId: string, projectId?: string) => request<{ left_run_id: string; right_run_id: string; same_graph: boolean; left_status: string; right_status: string; nodes: Array<{ node_id: string; left_status: string | null; right_status: string | null; left_attempt: number | null; right_attempt: number | null; left_artifact_id: string | null; right_artifact_id: string | null }> }>(`/api/run-comparisons?left_id=${encodeURIComponent(leftId)}&right_id=${encodeURIComponent(rightId)}${projectId ? `&project_id=${encodeURIComponent(projectId)}` : ""}`),
-  getEvents: (runId: string, after: number) =>
-    request<RunEvent[]>(`/api/runs/${runId}/events?after=${after}`),
+  getEvents: (runId: string, after: number, projectId: string) =>
+    request<RunEvent[]>(`/api/runs/${runId}/events?after=${after}&project_id=${encodeURIComponent(projectId)}`),
   cancelRun: (runId: string) => request<{ status: string }>(`/api/runs/${runId}/cancel`, { method: "POST" }),
   resumeRun: (runId: string) => request<{ runId: string; resumedNodeId: string }>(`/api/runs/${runId}/resume`, { method: "POST" }),
   retryNode: (nodeRunId: string) =>
     request<{ runId: string }>(`/api/node-runs/${nodeRunId}/retry`, { method: "POST" }),
   retryMapItem: (nodeRunId: string) =>
     request<{ runId: string; itemId: string }>(`/api/map-items/${nodeRunId}/retry`, { method: "POST" }),
-  getMapRunSummary: (nodeRunId: string) =>
-    request<MapRunSummary>(`/api/map-runs/${nodeRunId}/summary`),
-  getAttempts: (nodeRunId: string) =>
-    request<NodeAttempt[]>(`/api/node-runs/${nodeRunId}/attempts`),
-  getProviderCalls: (attemptId: string) =>
-    request<ProviderCall[]>(`/api/attempts/${attemptId}/provider-calls`),
+  getMapRunSummary: (nodeRunId: string, projectId: string) =>
+    request<MapRunSummary>(`/api/map-runs/${nodeRunId}/summary?project_id=${encodeURIComponent(projectId)}`),
+  getAttempts: (nodeRunId: string, projectId: string) =>
+    request<NodeAttempt[]>(`/api/node-runs/${nodeRunId}/attempts?project_id=${encodeURIComponent(projectId)}`),
+  getProviderCalls: (attemptId: string, projectId: string) =>
+    request<ProviderCall[]>(`/api/attempts/${attemptId}/provider-calls?project_id=${encodeURIComponent(projectId)}`),
   getNodeDefinitions: () => request<NodeDefinition[]>("/api/node-definitions"),
   getDeepSeekStatus: () => request<ProviderStatus>("/api/providers/deepseek/status"),
   saveDeepSeekConfig: (config: { api_key?: string; base_url: string; default_model: string }) =>
@@ -118,7 +124,7 @@ export const api = {
   getProviderModels: (connectionId?: string) => request<ProviderModel[]>(`/api/provider-models${connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""}`),
   addProviderModel: (model: ProviderModelInput) => request<ProviderModel>("/api/provider-models", { method: "POST", body: JSON.stringify(model) }),
   getArtifact: (artifactId: string, projectId?: string) => request<Artifact>(`/api/artifacts/${artifactId}${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ""}`),
-  getApprovals: () => request<ApprovalRecord[]>("/api/approvals"),
+  getApprovals: (projectId: string) => request<ApprovalRecord[]>(`/api/approvals?project_id=${encodeURIComponent(projectId)}`),
   decideApproval: (id: string, decision: "approved" | "rejected", note: string) =>
     request<ApprovalRecord>(`/api/approvals/${id}/decide`, {
       method: "POST", body: JSON.stringify({ decision, note, actor: "local-user" }),
@@ -133,8 +139,8 @@ export const api = {
   }),
   getProductionCanvas: (projectId: string) =>
     request<ProductionCanvas>(`/api/projects/${projectId}/production-canvas`),
-  saveProductionCanvas: (projectId: string, canvas: ProductionCanvas) =>
-    request<ProductionCanvas>(`/api/projects/${projectId}/production-canvas`, {
+  saveProductionCanvas: (projectId: string, canvas: ProductionCanvas, expectedRevision: number) =>
+    request<ProductionCanvas>(`/api/projects/${projectId}/production-canvas?expected_revision=${expectedRevision}`, {
       method: "PUT", body: JSON.stringify(canvas),
     }),
   updateProductionStage: (projectId: string, stageId: string, changes: Partial<Pick<ProductionStage, "title" | "description" | "workflow_id" | "workflow_revision" | "parameter_values">>) =>
@@ -239,9 +245,9 @@ export const api = {
     }),
 };
 
-export function eventUrl(runId: string, after: number): string {
+export function eventUrl(runId: string, after: number, projectId: string): string {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${location.host}/api/runs/${runId}/events?after=${after}`;
+  return `${protocol}://${location.host}/api/runs/${runId}/events?after=${after}&project_id=${encodeURIComponent(projectId)}`;
 }
 
 export function readApiError(error: Error): string {

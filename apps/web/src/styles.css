@@ -545,7 +545,9 @@ select { margin-bottom: 12px; }
 
 @media (max-width: 900px) {
   body { overflow: auto; }
-  .topbar { grid-template-columns: 1fr auto; }
+  .topbar { grid-template-columns: minmax(130px, 1fr) minmax(0, auto); overflow: hidden; }
+  .top-actions { min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; padding-bottom: 2px; scrollbar-width: thin; }
+  .top-actions > * { flex: 0 0 auto; }
   .workflow-title { display: none; }
   .workspace { height: auto; min-height: calc(100vh - 68px); grid-template-columns: 52px 1fr; }
   .rail { grid-row: 1 / 3; }
@@ -558,7 +560,9 @@ select { margin-bottom: 12px; }
   .topbar { height: 60px; }
   .brand { border-right: 0; padding-left: 10px; }
   .brand span, .ghost-button { display: none !important; }
-  .project-select { width: 105px; }
+  .top-actions { gap: 5px; padding-right: 6px; }
+  .top-actions button, .project-select { min-height: 40px; font-size: 12px; }
+  .project-select { width: 112px; }
   .chapter-control { display: none; }
   .mobile-model-button { display: flex !important; padding: 0 10px !important; }
   .workspace { min-height: calc(100vh - 60px); grid-template-columns: 1fr; }
@@ -571,6 +575,8 @@ select { margin-bottom: 12px; }
   .inspector { min-height: 42vh; }
   .run-strip { left: 8px; right: 8px; bottom: 8px; }
   .node-workspace { grid-template-rows: 58px minmax(0, 1fr) 24px; }.node-workspace-head { padding: 0 10px; }.node-workspace-head code { display: none; }.node-workspace-body { grid-template-columns: 1fr; }.node-workspace-nav { display: flex; padding: 4px; border-right: 0; border-bottom: 1px solid #30322d; }.node-workspace-nav > button { justify-content: center; border-left: 0; border-bottom: 2px solid transparent; }.node-workspace-nav > button.active { border-bottom-color: var(--acid); }.node-workspace-nav > button small, .workspace-node-meta { display: none; }.node-workspace-main { padding: 20px 12px 70px; }.node-workspace-body { grid-template-rows: 46px minmax(0, 1fr); }
+  .inspector-body, .policy-modal, .report-modal-body { font-size: 12px; }
+  .section-label, .field-label, .section-help, .empty-note { font-size: max(11px, 0.6875rem); }
 }
 .stage-parameter { display: grid; grid-template-columns: 1fr 1.2fr; gap: 10px; align-items: center; margin-top: 9px; color: #afb5a5; font-size: 9px; }
 .stage-parameter span { min-width: 0; }

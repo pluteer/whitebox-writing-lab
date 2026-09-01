@@ -80,6 +80,7 @@ export function toFlowNodes(
           : node.type === "flow.join" ? "Join"
           : node.type === "flow.split" ? "Split"
           : node.type === "flow.map" ? "Map"
+          : node.type === "reference.book_source" ? "参考书源"
           : node.type === "core.approval" ? "人工审批"
           : node.type === "writing.chapter_archive" ? "章节归档"
           : node.type === "writing.state_proposal" ? "状态变更提案" : "白盒改写",

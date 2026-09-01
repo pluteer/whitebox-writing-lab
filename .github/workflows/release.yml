@@ -3,78 +3,120 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  id-token: write
 
 jobs:
   build-windows:
+    permissions:
+      contents: read
     runs-on: windows-latest
+    outputs:
+      release_tag: ${{ steps.version.outputs.release_tag }}
+      version: ${{ steps.version.outputs.version }}
+      release_commit: ${{ steps.version.outputs.release_commit }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - id: version
+        name: Validate release tag and version
+        shell: powershell
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python tools/check_version.py --tag $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0) { throw 'Version validation failed' }
+          $tagCommit = (git rev-list -n 1 "refs/tags/$env:RELEASE_TAG").Trim()
+          $headCommit = (git rev-parse HEAD).Trim()
+          if (-not $tagCommit -or $headCommit -ne $tagCommit) { throw "Checked out commit $headCommit is not tag $env:RELEASE_TAG ($tagCommit)" }
+          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
+          "release_tag=$env:RELEASE_TAG" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release_commit=$headCommit" >> $env:GITHUB_OUTPUT
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
+          cache: pip
       - name: Install build tools
         shell: powershell
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".\apps\api[dev]" pyinstaller
-          choco install innosetup --yes --no-progress
+          python -m pip install -c tools/build-constraints.txt -e ".\apps\api[dev]" pyinstaller
+          choco install innosetup --version=6.7.1 --yes --no-progress
       - name: Build portable archive and installer
         shell: powershell
         run: .\installer\BuildPortable.ps1
       - name: Collect release artifacts
         shell: powershell
         run: |
-          $version = (Get-Content -Raw version.json | ConvertFrom-Json).version
+          $version = '${{ steps.version.outputs.version }}'
           New-Item -ItemType Directory -Force release-artifacts | Out-Null
           Copy-Item "packaging\whitebox-writing-portable-$version.zip" release-artifacts
           Copy-Item "installer\Output\Whitebox-Writing-$version-Setup.exe" release-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: unsigned-release-artifacts
           path: release-artifacts/*
 
   sign-and-release:
     needs: build-windows
+    permissions:
+      contents: write
+      id-token: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.build-windows.outputs.release_tag }}
+          fetch-depth: 0
+      - name: Confirm signed source identity
+        env:
+          RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+          RELEASE_COMMIT: ${{ needs.build-windows.outputs.release_commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
+          tag_commit=$(git rev-list -n 1 "refs/tags/$RELEASE_TAG")
+          test "$tag_commit" = "$RELEASE_COMMIT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: unsigned-release-artifacts
           path: release-artifacts
-      - name: Install Sigstore verifier
+      - name: Install pinned Sigstore verifier
         run: |
           python -m venv .sigstore-venv
-          .sigstore-venv/bin/python -m pip install --disable-pip-version-check sigstore
+          .sigstore-venv/bin/python -m pip install --disable-pip-version-check 'sigstore==3.6.4'
           echo "$PWD/.sigstore-venv/bin" >> "$GITHUB_PATH"
       - name: Generate SHA256 checksums
-        run: |
-          cd release-artifacts
-          sha256sum * > SHA256SUMS
+        run: (cd release-artifacts && sha256sum * > SHA256SUMS)
       - name: Sign release artifacts with Sigstore keyless signing
-        uses: sigstore/gh-action-sigstore-python@v3.4.0
+        uses: sigstore/gh-action-sigstore-python@5b79a39c381910c090341a2c9b0bf022c8b387e1 # v3.4.0
         with:
           inputs: >-
             ./release-artifacts/*.zip
             ./release-artifacts/*.exe
             ./release-artifacts/SHA256SUMS
           verify: true
-          verify-cert-identity: https://github.com/pluteer/whitebox-writing-lab/.github/workflows/release.yml@${{ github.ref }}
+          verify-cert-identity: https://github.com/${{ github.workflow_ref }}
           verify-oidc-issuer: https://token.actions.githubusercontent.com
       - name: Verify Sigstore bundles before publishing
-        run: python tools/verify_sigstore_release.py release-artifacts --verify-signatures --certificate-identity "https://github.com/pluteer/whitebox-writing-lab/.github/workflows/release.yml@${GITHUB_REF}"
+        env:
+          RELEASE_TAG: ${{ needs.build-windows.outputs.release_tag }}
+          CERTIFICATE_IDENTITY: https://github.com/${{ github.workflow_ref }}
+        run: python tools/verify_sigstore_release.py release-artifacts --verify-signatures --certificate-identity "$CERTIFICATE_IDENTITY"
+      - id: notes
+        name: Resolve release notes
+        env:
+          VERSION: ${{ needs.build-windows.outputs.version }}
+        run: |
+          path="docs/RELEASE_NOTES_${VERSION}.md"
+          if test -f "$path"; then echo "path=$path" >> "$GITHUB_OUTPUT"; else echo "path=" >> "$GITHUB_OUTPUT"; fi
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836 # v2.3.3
         with:
+          tag_name: ${{ needs.build-windows.outputs.release_tag }}
           generate_release_notes: true
-          body_path: docs/RELEASE_NOTES_0.4.3.md
+          body_path: ${{ steps.notes.outputs.path }}
           files: release-artifacts/*

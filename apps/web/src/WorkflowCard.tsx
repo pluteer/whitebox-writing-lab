@@ -1,5 +1,5 @@
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { Archive, BrainCircuit, FileCheck2, FileInput, Gavel, GitCompare, PenLine, ShieldCheck, UserCheck } from "lucide-react";
+import { Archive, BrainCircuit, BookOpen, FileCheck2, FileInput, Gavel, GitCompare, PenLine, ShieldCheck, UserCheck } from "lucide-react";
 
 type CardData = {
   label: string;
@@ -34,14 +34,15 @@ export function WorkflowCard({ data, selected, type }: NodeProps) {
   const isState = type === "writing.state_proposal";
   const isWorkflowBoundary = type === "workflow.input" || type === "workflow.output";
   const isFlow = type === "flow.join" || type === "flow.split" || type === "flow.map";
-  const Icon = isSource ? FileInput : isReview ? FileCheck2 : isArbiter ? Gavel : isDiff ? GitCompare : isQuality ? ShieldCheck : isApproval ? UserCheck : isArchive || isState ? Archive : isRevision || isModel ? BrainCircuit : PenLine;
+  const isBookSource = type === "reference.book_source";
+  const Icon = isSource ? FileInput : isBookSource ? BookOpen : isReview ? FileCheck2 : isArbiter ? Gavel : isDiff ? GitCompare : isQuality ? ShieldCheck : isApproval ? UserCheck : isArchive || isState ? Archive : isRevision || isModel ? BrainCircuit : PenLine;
 
   return (
     <div className={`workflow-card comfy-node ${selected ? "is-selected" : ""} status-${card.status ?? "idle"}`}>
       <div className="comfy-node-title"><span className="card-icon"><Icon size={14} strokeWidth={1.7} /></span><strong>{card.label}</strong><small>{statusLabels[card.status ?? ""] ?? "READY"}</small></div>
       <div className="card-heading">
         <div>
-          <small>{isSource ? "INPUT / MOCK" : isReview ? "REVIEWER / LLM" : isArbiter ? "ARBITER / LLM" : isRevision ? "REVISION / LLM" : isDiff ? "DIFF / SCRIPT" : isQuality ? "GATE / SCRIPT" : isApproval ? "HUMAN / APPROVAL" : isArchive ? "ARCHIVE / SCRIPT" : isState ? "STATE / PROPOSAL" : isAgent ? "AGENT / AGENT" : isPrompt ? "PROMPT / LLM" : isWorkflowBoundary ? "WORKFLOW / BOUNDARY" : isFlow ? "FLOW / CONTROL" : isModel ? "WRITER / LLM" : "TRANSFORM / SCRIPT"}</small>
+          <small>{isSource ? "INPUT / MOCK" : isBookSource ? "REFERENCE / SOURCE" : isReview ? "REVIEWER / LLM" : isArbiter ? "ARBITER / LLM" : isRevision ? "REVISION / LLM" : isDiff ? "DIFF / SCRIPT" : isQuality ? "GATE / SCRIPT" : isApproval ? "HUMAN / APPROVAL" : isArchive ? "ARCHIVE / SCRIPT" : isState ? "STATE / PROPOSAL" : isAgent ? "AGENT / AGENT" : isPrompt ? "PROMPT / LLM" : isWorkflowBoundary ? "WORKFLOW / BOUNDARY" : isFlow ? "FLOW / CONTROL" : isModel ? "WRITER / LLM" : "TRANSFORM / SCRIPT"}</small>
            <strong>{isAgent ? "受限工具 Agent" : isPrompt ? "一次 Prompt 调用" : ""}</strong>
         </div>
       </div>

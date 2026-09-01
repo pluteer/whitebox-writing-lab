@@ -291,7 +291,7 @@ NODE_DEFINITIONS = {
     "workflow.input": NodeDefinition(
         type="workflow.input", version="1.0.0", title="Workflow Input",
         description="定义 Workflow 对外暴露的输入。", category="workflow",
-        inputs={"source": PortDefinition(type="core.Artifact@1", required=False, accepts=["core.Text@1","core.Artifact@1","writing.Draft@1","writing.ReviewSet@1","writing.DecisionSet@1","writing.Revision@1","ai.PromptResult@1","ai.AgentTaskResult@1"])}, outputs={"value": PortDefinition(type="core.Text@1")},
+        inputs={"source": PortDefinition(type="core.Artifact@1", required=False, accepts=["core.Text@1","core.Artifact@1","writing.Draft@1","writing.ReviewSet@1","writing.DecisionSet@1","writing.Revision@1","writing.ArchivedChapter@1","writing.StatePatch@1","ai.PromptResult@1","ai.AgentTaskResult@1"])}, outputs={"value": PortDefinition(type="core.Text@1")},
         config_schema={"type":"object","required":["name"],"properties":{"name":{"type":"string"},"default":{"type":"string"}}},
         execution=ExecutionPolicy(kind="script", cache="content-addressed"),
     ),

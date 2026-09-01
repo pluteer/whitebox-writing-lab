@@ -90,9 +90,13 @@ def compile_workflow(
                     errors.append(f"节点 {node.id} 引用的供应商连接不存在")
                 elif provider_models is None or (str(connection_id), str(model_id)) not in provider_models:
                     errors.append(f"节点 {node.id} 引用的模型不在全局模型目录")
-                temperature = float(node.config.get("temperature", 0.7))
-                if not 0 <= temperature <= 2:
-                    errors.append(f"节点 {node.id} 的 temperature 必须在 0 到 2 之间")
+                try:
+                    temperature = float(node.config.get("temperature", 0.7))
+                except (TypeError, ValueError):
+                    errors.append(f"节点 {node.id} 的 temperature 必须是数字")
+                else:
+                    if not 0 <= temperature <= 2:
+                        errors.append(f"节点 {node.id} 的 temperature 必须在 0 到 2 之间")
             elif profile_id:
                 if model_profiles is None or profile_id not in model_profiles:
                     errors.append(f"节点 {node.id} 引用的旧配置档不存在")

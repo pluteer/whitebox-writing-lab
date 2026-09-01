@@ -28,6 +28,22 @@ def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
     assert info.json()["database_path"] == str(database)
     assert info.json()["secrets_path"] == str(secrets)
     assert info.json()["projects_path"] == str(projects)
+    assert info.json()["instance_token_valid"] is False
+    assert "instance_token" not in info.json()
+
+
+def test_runtime_info_validates_launcher_instance_token_without_disclosing_it(tmp_path, monkeypatch) -> None:
+    token = "a" * 64
+    monkeypatch.setenv("WHITEBOX_INSTANCE_TOKEN", token)
+    app = create_app(tmp_path / "runtime-token.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        rejected = client.get("/api/runtime-info", headers={"X-Whitebox-Instance-Token": "b" * 64})
+        info = client.get("/api/runtime-info", headers={"X-Whitebox-Instance-Token": token})
+
+    assert rejected.json()["instance_token_valid"] is False
+    assert info.status_code == 200
+    assert info.json()["instance_token_valid"] is True
+    assert "instance_token" not in info.json()
 
 
 def test_project_creation_persists_author_brief_as_versioned_asset(tmp_path) -> None:
@@ -581,12 +597,94 @@ def test_running_workflow_can_be_cancelled(tmp_path) -> None:
         cancelled = wait_for_status(client, run_id, {"cancelled"})
         assert all(item["output_artifact_id"] is None for item in cancelled["node_runs"])
         assert client.get(f"/api/runs/{run_id}/events").json()[-1]["type"] == "run.cancelled"
+        deadline = time.monotonic() + 2
+        while run_id in app.state.engine.tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert run_id not in app.state.engine.tasks
+        assert run_id not in app.state.engine.cancelled
+
+
+def test_event_broker_queue_is_bounded_and_drops_oldest() -> None:
+    from whitebox.engine import EventBroker
+
+    broker = EventBroker(queue_size=2)
+    queue = broker.subscribe("run")
+    broker.publish("run", {"value": 1})
+    broker.publish("run", {"value": 2})
+    broker.publish("run", {"value": 3})
+
+    assert queue.maxsize == 2
+    assert queue.get_nowait() == {"value": 2}
+    assert queue.get_nowait() == {"value": 3}
+    broker.unsubscribe("run", queue)
+    assert "run" not in broker._subscribers
+
+
+def test_prompt_cache_isolated_by_project_chapter_and_override(tmp_path) -> None:
+    app = make_test_app(tmp_path / "prompt-cache-isolation.db")
+    workflow = {
+        "id": "prompt-cache", "name": "cache", "revision": 1,
+        "nodes": [{
+            "id": "call", "type": "ai.prompt_call", "position": {"x": 0, "y": 0},
+            "config": {
+                "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
+                "system_prompt": "Project {{project.title}}", "user_prompt": "Chapter {{chapter.number}}",
+                "prompt_id": "chapter.writer.system",
+            },
+        }], "edges": [],
+    }
+    with TestClient(app) as client:
+        other = client.post("/api/projects", json={"title": "Other", "slug": "other"}).json()
+
+        def run(project_id: str, chapter: int) -> list[dict]:
+            run_id = client.post("/api/runs", json={
+                "workflow": workflow, "project_id": project_id, "chapter_number": chapter,
+            }).json()["runId"]
+            wait_for_status(client, run_id, {"succeeded"})
+            return client.get(f"/api/runs/{run_id}/events").json()
+
+        assert not any(event["type"] == "node.cached" for event in run("demo-project", 1))
+        assert any(event["type"] == "node.cached" for event in run("demo-project", 1))
+        assert not any(event["type"] == "node.cached" for event in run("demo-project", 2))
+        assert not any(event["type"] == "node.cached" for event in run(other["id"], 1))
+        saved = client.put("/api/projects/demo-project/prompt-overrides/chapter.writer.system", json={"content": "override"})
+        assert saved.status_code == 200
+        assert not any(event["type"] == "node.cached" for event in run("demo-project", 1))
+
+
+def test_plain_run_honors_side_effect_permission(tmp_path) -> None:
+    app = make_test_app(tmp_path / "run-side-effect.db")
+    request = {"workflow": DEFAULT_WORKFLOW.model_dump(mode="json"), "allow_side_effects": False}
+    with TestClient(app) as client:
+        blocked = client.post("/api/runs", json=request)
+
+    assert blocked.status_code == 409
+    assert "archive" in blocked.text
+
+
+def test_run_overrides_archive_path_with_current_project_context(tmp_path) -> None:
+    app = make_test_app(tmp_path / "archive-context.db")
+    workflow = DEFAULT_WORKFLOW.model_copy(deep=True)
+    archive = next(node for node in workflow.nodes if node.id == "archive")
+    archive.config["chapter_path"] = "other-project/manuscript/stolen.md"
+    with TestClient(app) as client:
+        project = client.post("/api/projects", json={"title": "Safe", "slug": "safe"}).json()
+        response = client.post("/api/runs", json={
+            "workflow": workflow.model_dump(mode="json"), "project_id": project["id"],
+            "chapter_number": 7, "allow_side_effects": True,
+        })
+        run = client.get(f"/api/runs/{response.json()['runId']}").json()
+
+    frozen = next(node for node in run["snapshot"]["nodes"] if node["id"] == "archive")
+    assert frozen["config"]["chapter_path"] == "safe/manuscript/chapter-0007.md"
+    assert frozen["config"]["project_id"] == project["id"]
 
 
 def test_new_app_instance_recovers_interrupted_node_attempt(tmp_path) -> None:
     database = tmp_path / "recovery.db"
     storage = Storage(database)
     storage.initialize()
+    storage.ensure_demo_project()
     storage.ensure_default_connection()
     storage.ensure_default_model_profile()
     storage.ensure_writing_pipeline_profiles()
@@ -598,6 +696,11 @@ def test_new_app_instance_recovers_interrupted_node_attempt(tmp_path) -> None:
         provider_models=models,
     ).execution_graph
     assert graph is not None
+    graph.run_context = {
+        "project_id": "demo-project", "project_title": "示例小说",
+        "project_slug": "demo", "chapter_number": 1,
+        "archive_path": "demo/manuscript/chapter-0001.md",
+    }
     run_id = str(uuid4())
     node_run_ids = {node.id: str(uuid4()) for node in graph.nodes}
     storage.create_run(run_id, graph, node_run_ids)
@@ -618,6 +721,27 @@ def test_new_app_instance_recovers_interrupted_node_attempt(tmp_path) -> None:
     assert attempts[1]["attempt"] == 2
     assert attempts[1]["status"] in {"succeeded", "cached"}
     assert any(event["type"] == "run.recovery.prepared" for event in client.get(f"/api/runs/{run_id}/events").json())
+
+
+def test_legacy_node_run_migration_adds_input_snapshot(tmp_path) -> None:
+    import sqlite3
+
+    database = tmp_path / "legacy.db"
+    with sqlite3.connect(database) as db:
+        db.execute(
+            "CREATE TABLE node_runs ("
+            "id TEXT PRIMARY KEY, run_id TEXT NOT NULL, node_id TEXT NOT NULL, "
+            "node_type TEXT NOT NULL, status TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 0, "
+            "input_artifact_ids TEXT NOT NULL DEFAULT '[]', output_artifact_id TEXT, "
+            "started_at TEXT, completed_at TEXT, error TEXT, UNIQUE(run_id, node_id))"
+        )
+
+    storage = Storage(database)
+    storage.initialize()
+
+    with sqlite3.connect(database) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(node_runs)")}
+    assert "input_snapshot" in columns
 
 
 def test_webui_provider_config_is_local_masked_and_actionable(tmp_path, monkeypatch) -> None:

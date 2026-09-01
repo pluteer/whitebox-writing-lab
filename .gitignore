@@ -16,8 +16,6 @@ apps/web/dist/
 installer/Output/
 packaging/
 share/
-自媒体内容/
-自媒体内容*/
 data/provider-secrets.json
 data/provider-secrets.json.tmp
 launcher/runtime/

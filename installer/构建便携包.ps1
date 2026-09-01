@@ -31,14 +31,14 @@ try {
     Rename-Item "$Packaging\runtime\whitebox-api" api
     New-Item -ItemType Directory -Force "$Packaging\runtime\web" | Out-Null
     Copy-Item -Recurse -Force "$Root\apps\web\dist\*" "$Packaging\runtime\web"
-    Copy-Item -Force "$Root\launcher\WhiteboxPortable.ps1", "$Root\launcher\StartWhiteboxPortable.bat", "$Root\README.md" $Packaging
+    Copy-Item -Force "$Root\launcher\WhiteboxPortable.ps1", "$Root\launcher\StartWhiteboxPortable.bat", "$Root\README.md", "$Root\version.json", "$Root\LICENSE" $Packaging
     if (-not $SkipInstaller) {
         & $Iscc "$Root\installer\Whitebox.iss"
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
     }
     $zip = "$Packaging\whitebox-writing-portable-$Version.zip"
     Remove-Item $zip -Force -ErrorAction SilentlyContinue
-    & "$env:SystemRoot\System32\tar.exe" -a -c -f $zip -C $Packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md
+    & "$env:SystemRoot\System32\tar.exe" -a -c -f $zip -C $Packaging runtime data logs WhiteboxPortable.ps1 StartWhiteboxPortable.bat README.md version.json LICENSE
     if ($LASTEXITCODE -ne 0) { throw "Portable archive creation failed." }
     $hash = (certutil.exe -hashfile $zip SHA256 | Select-Object -Skip 1 | Select-Object -First 1).Trim()
     Write-Output ("SHA256  " + $hash)

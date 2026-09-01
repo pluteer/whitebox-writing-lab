@@ -128,3 +128,38 @@ def test_generic_openai_compatible_request_omits_deepseek_specific_fields() -> N
 
     asyncio.run(execute())
     assert "thinking" not in captured
+
+
+def test_generic_provider_does_not_inherit_deepseek_key(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-env-secret")
+
+    assert OpenAICompatibleProvider().api_key is None
+    assert DeepSeekProvider().api_key == "deepseek-env-secret"
+
+
+def test_openai_compatible_preserves_v1_and_accepts_sse_without_space() -> None:
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        return httpx.Response(200, text=(
+            'data:{"id":"generic-1","choices":[{"delta":{"content":"ok"},'
+            '"finish_reason":"stop"}]}\n\ndata:[DONE]\n\n'
+        ))
+
+    provider = OpenAICompatibleProvider(
+        api_key="secret", base_url="https://generic.example/v1/",
+        transport=httpx.MockTransport(handler),
+    )
+
+    async def execute():
+        async def on_delta(_: str) -> None:
+            pass
+
+        return await provider.stream_chat(
+            model="model", messages=[], temperature=0.2, max_tokens=10,
+            thinking=False, on_delta=on_delta,
+        )
+
+    assert asyncio.run(execute()).text == "ok"
+    assert captured["path"] == "/v1/chat/completions"

@@ -85,4 +85,15 @@ describe("toFlowNodes", () => {
     expect(projected.find((node) => node.id === "agent")?.data.label).toBe("Agent Task");
     expect(projected.find((node) => node.id === "agent")?.data.agentRole).toBe("agent");
   });
+
+  it("renders flow split and reference book source node types", () => {
+    const projected = toFlowNodes({
+      ...workflow,
+      nodes: [
+        { id: "split", type: "flow.split", position: { x: 0, y: 0 }, config: {} },
+        { id: "book", type: "reference.book_source", position: { x: 300, y: 0 }, config: {} },
+      ],
+    }, null);
+    expect(projected.map((node) => node.data.label)).toEqual(["Split", "参考书源"]);
+  });
 });

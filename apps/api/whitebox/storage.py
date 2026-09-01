@@ -40,6 +40,9 @@ from .models import (
 )
 
 
+MAX_PROVIDER_PAYLOAD_BYTES = 8 * 1024 * 1024
+
+
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -300,10 +303,11 @@ class Storage:
                 """
             )
             db.execute("PRAGMA journal_mode = WAL")
-            try:
+            node_run_columns = {
+                row["name"] for row in db.execute("PRAGMA table_info(node_runs)")
+            }
+            if "input_snapshot" not in node_run_columns:
                 db.execute("ALTER TABLE node_runs ADD COLUMN input_snapshot TEXT")
-            except sqlite3.OperationalError:
-                pass
             profile_columns = {row["name"] for row in db.execute("PRAGMA table_info(model_profiles)")}
             if "connection_id" not in profile_columns:
                 db.execute("ALTER TABLE model_profiles ADD COLUMN connection_id TEXT")
@@ -411,6 +415,27 @@ class Storage:
             )
         return canvas
 
+    def save_production_canvas_checked(
+        self, canvas: ProductionCanvas, expected_revision: int
+    ) -> ProductionCanvas:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT document FROM production_canvases WHERE project_id=?",
+                (canvas.project_id,),
+            ).fetchone()
+            current = ProductionCanvas.model_validate_json(row["document"]) if row else None
+            current_revision = current.revision if current else 0
+            if current_revision != expected_revision:
+                raise ValueError(f"生产画布版本冲突，当前版本为 {current_revision}")
+            saved = canvas.model_copy(update={"revision": current_revision + 1})
+            db.execute(
+                "INSERT INTO production_canvases VALUES(?,?,?) "
+                "ON CONFLICT(project_id) DO UPDATE SET document=excluded.document,updated_at=excluded.updated_at",
+                (saved.project_id, saved.model_dump_json(), utc_now()),
+            )
+        return saved
+
     def save_reference_book(self, book: ReferenceBookRecord) -> ReferenceBookRecord:
         with self._lock, self._connect() as db:
             db.execute(
@@ -504,6 +529,23 @@ class Storage:
                 (project_id, artifact_id, actor, note, utc_now()),
             )
         return cursor.rowcount > 0
+
+    def unmark_state_patch_applied(self, project_id: str, artifact_id: str) -> None:
+        with self._lock, self._connect() as db:
+            db.execute(
+                "DELETE FROM state_patch_applications WHERE project_id=? AND artifact_id=?",
+                (project_id, artifact_id),
+            )
+
+    def delete_asset_versions(self, version_ids: list[str]) -> None:
+        if not version_ids:
+            return
+        with self._lock, self._connect() as db:
+            placeholders = ",".join("?" for _ in version_ids)
+            db.execute(
+                f"DELETE FROM asset_versions WHERE id IN ({placeholders})",  # noqa: S608
+                version_ids,
+            )
 
     def import_skill(
         self,
@@ -970,7 +1012,9 @@ class Storage:
             row = db.execute("SELECT * FROM workflow_versions WHERE workflow_id=? AND revision=?", (workflow_id, revision)).fetchone()
         return WorkflowVersion(workflow_id=row["workflow_id"], revision=row["revision"], document=WorkflowDocument.model_validate_json(row["document"]), created_at=row["created_at"], note=row["note"]) if row else None
 
-    def save_workflow_checked(self, workflow: WorkflowDocument) -> None:
+    def save_workflow_checked(
+        self, workflow: WorkflowDocument, expected_revision: int | None = None
+    ) -> None:
         profile_ids = {
             str(node.config["profile_id"])
             for node in workflow.nodes
@@ -978,6 +1022,19 @@ class Storage:
         }
         with self._lock, self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            current_row = db.execute(
+                "SELECT document FROM workflows WHERE id=?", (workflow.id,)
+            ).fetchone()
+            current_revision = (
+                WorkflowDocument.model_validate_json(current_row["document"]).revision
+                if current_row else 0
+            )
+            if expected_revision is not None and current_revision != expected_revision:
+                raise ValueError(f"Workflow 版本冲突，当前版本为 {current_revision}")
+            if expected_revision is not None and workflow.revision <= current_revision:
+                raise ValueError(
+                    f"Workflow revision 必须大于当前版本 {current_revision}"
+                )
             if profile_ids:
                 placeholders = ",".join("?" for _ in profile_ids)
                 existing = {
@@ -1105,6 +1162,18 @@ class Storage:
             for row in rows
         ]
 
+    def get_attempt(self, attempt_id: str) -> NodeAttempt | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT node_run_id FROM node_attempts WHERE id=?", (attempt_id,)
+            ).fetchone()
+        if not row:
+            return None
+        return next(
+            (item for item in self.list_attempts(row["node_run_id"]) if item.id == attempt_id),
+            None,
+        )
+
     def create_provider_call(
         self,
         call_id: str,
@@ -1113,6 +1182,9 @@ class Storage:
         model: str,
         request_payload: dict[str, Any],
     ) -> None:
+        serialized_payload = json.dumps(request_payload, ensure_ascii=False)
+        if len(serialized_payload.encode()) > MAX_PROVIDER_PAYLOAD_BYTES:
+            raise ValueError("供应商请求审计载荷超过 8 MB 限制")
         with self._lock, self._connect() as db:
             db.execute(
                 "INSERT INTO provider_calls(id, attempt_id, provider, model, request_payload, status, started_at) "
@@ -1122,7 +1194,7 @@ class Storage:
                     attempt_id,
                     provider,
                     model,
-                    json.dumps(request_payload, ensure_ascii=False),
+                    serialized_payload,
                     utc_now(),
                 ),
             )
@@ -1138,6 +1210,12 @@ class Storage:
         finish_reason: str | None = None,
         error: dict[str, Any] | None = None,
     ) -> None:
+        serialized_response = (
+            json.dumps(response_payload, ensure_ascii=False)
+            if response_payload is not None else None
+        )
+        if serialized_response and len(serialized_response.encode()) > MAX_PROVIDER_PAYLOAD_BYTES:
+            raise ValueError("供应商响应审计载荷超过 8 MB 限制")
         with self._lock, self._connect() as db:
             db.execute(
                 "UPDATE provider_calls SET status=?, request_id=?, response_payload=?, usage=?, "
@@ -1145,7 +1223,7 @@ class Storage:
                 (
                     status,
                     request_id,
-                    json.dumps(response_payload, ensure_ascii=False) if response_payload is not None else None,
+                    serialized_response,
                     usage.model_dump_json() if usage else None,
                     finish_reason,
                     json.dumps(error, ensure_ascii=False) if error else None,
@@ -1287,6 +1365,46 @@ class Storage:
                 "SELECT id FROM runs WHERE status IN ('pending', 'running') ORDER BY created_at"
             ).fetchall()
         return [row["id"] for row in rows]
+
+    def migrate_legacy_run_context(
+        self, run_id: str, project: Project, chapter_number: int = 1
+    ) -> bool:
+        with self._lock, self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT snapshot FROM runs WHERE id=?", (run_id,)).fetchone()
+            if not row:
+                return False
+            graph = ExecutionGraph.model_validate_json(row["snapshot"])
+            if graph.run_context.get("project_id"):
+                return False
+            archive_path = f"{project.slug}/manuscript/chapter-{chapter_number:04d}.md"
+            graph.run_context = {
+                "project_id": project.id,
+                "project_title": project.title,
+                "project_slug": project.slug,
+                "chapter_number": chapter_number,
+                "archive_path": archive_path,
+            }
+            for node in graph.nodes:
+                if node.type == "writing.chapter_archive":
+                    node.config.update({
+                        "chapter_path": archive_path,
+                        "project_id": project.id,
+                        "chapter_number": chapter_number,
+                    })
+            graph.graph_hash = hashlib.sha256(
+                json.dumps(
+                    graph.model_dump(exclude={"graph_hash"}),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            db.execute(
+                "UPDATE runs SET snapshot=?,graph_hash=? WHERE id=?",
+                (graph.model_dump_json(), graph.graph_hash, run_id),
+            )
+        return True
 
     def get_approval_for_node(self, node_run_id: str) -> ApprovalRecord | None:
         with self._connect() as db:

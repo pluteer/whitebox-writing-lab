@@ -1,6 +1,6 @@
 # Whitebox Windows 启动器
 
-双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.3.0`。
+双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.4.3`。
 
 启动器通过 Windows 的 `wsl.exe` 调用项目现有 WSL 环境，不复制或复用 ComfyUI 的 Python、Git、DLL、配置及源码。
 
@@ -27,17 +27,19 @@
 
 仓库提供 `installer/Whitebox.iss` Inno Setup 脚本。Windows 安装机安装 Inno Setup 6 后双击 `installer/构建安装包.bat` 即可生成安装包；只构建朋友可直接使用的便携 ZIP 时运行 `installer/构建便携包.ps1 -SkipInstaller`。安装包和便携包不包含 WSL、Python、Node.js、npm、虚拟环境、依赖目录或密钥。
 
-卸载时会先尝试停止 Whitebox 服务，再删除安装目录中的运行日志和设置文件；用户项目数据、WSL 环境和项目外部数据不会由卸载器处理。
+卸载时会先尝试停止 Whitebox 服务，再删除运行日志和启动器设置。`{app}\data` 中的数据库、项目和 provider 密钥明确保留，卸载器不会静默删除用户数据；确认备份后可由用户手动删除。WSL 环境和项目外部数据也不会由卸载器处理。
 
 ## 命令行维护
 
 要构建给朋友直接使用的便携包，在 Windows PowerShell 中从项目根目录执行：
 
 ```powershell
-.\installer\构建便携包.ps1 -Version 0.3.0
+.\installer\构建便携包.ps1 -Version 0.4.3
 ```
 
-输出为 `packaging\whitebox-writing-portable-0.3.0.zip`。解压后双击 `StartWhiteboxPortable.bat`，不需要 WSL、Python、Node.js 或 npm；首次使用仍需要在 WebUI 中配置朋友自己的模型 API Key。
+输出为 `packaging\whitebox-writing-portable-0.4.3.zip`。解压后双击 `StartWhiteboxPortable.bat`，不需要 WSL、Python、Node.js 或 npm；首次使用仍需要在 WebUI 中配置朋友自己的模型 API Key。
+
+便携启动器在 NTFS 上将 `data` 和 `provider-secrets.json` ACL 收紧到当前 Windows 用户与 SYSTEM。在 FAT/exFAT、网络盘或 ACL 调整失败时会警告但保持便携可用，此时必须把整个便携目录视为敏感数据并限制他人访问。当前密钥仍是明文 JSON；DPAPI 加密需要 API 存储格式协同，不能只由启动器安全地实现。
 
 在 PowerShell 中从 `launcher` 目录执行：
 

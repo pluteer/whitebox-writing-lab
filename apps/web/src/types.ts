@@ -4,7 +4,7 @@ export type WorkflowNodeType =
   | "writing.revision_diff" | "writing.quality_gate" | "core.approval"
   | "writing.chapter_archive" | "writing.state_proposal" | "writing.custom_prompt"
   | "ai.prompt_call" | "ai.agent_task" | "workflow.input" | "workflow.output"
-  | "flow.split" | "flow.join" | "flow.map";
+  | "flow.split" | "flow.join" | "flow.map" | "reference.book_source";
 
 export interface WorkflowNode {
   id: string;

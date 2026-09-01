@@ -204,3 +204,24 @@ def test_notes_and_nested_frames_are_editor_only_and_cycles_rejected() -> None:
     )
     assert not invalid.valid
     assert any("嵌套环路" in error for error in invalid.errors)
+
+
+def test_invalid_temperature_returns_validation_error() -> None:
+    workflow = WorkflowDocument.model_validate({
+        "id": "bad-temperature", "name": "bad", "revision": 1,
+        "nodes": [{
+            "id": "call", "type": "ai.prompt_call", "position": {"x": 0, "y": 0},
+            "config": {
+                "connection_id": "deepseek-official", "model": "deepseek-v4-flash",
+                "temperature": "not-a-number", "user_prompt": "test",
+            },
+        }], "edges": [],
+    })
+
+    result = compile_workflow(
+        workflow, model_profiles=PROFILES, provider_connections=CONNECTIONS,
+        provider_models=MODELS,
+    )
+
+    assert not result.valid
+    assert any("temperature 必须是数字" in error for error in result.errors)

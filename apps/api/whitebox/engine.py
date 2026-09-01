@@ -27,19 +27,27 @@ class WaitingApproval(Exception):
 
 
 class EventBroker:
-    def __init__(self) -> None:
+    def __init__(self, queue_size: int = 256) -> None:
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
+        self.queue_size = queue_size
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
-        queue: asyncio.Queue = asyncio.Queue()
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self.queue_size)
         self._subscribers.setdefault(run_id, set()).add(queue)
         return queue
 
     def unsubscribe(self, run_id: str, queue: asyncio.Queue) -> None:
-        self._subscribers.get(run_id, set()).discard(queue)
+        subscribers = self._subscribers.get(run_id)
+        if not subscribers:
+            return
+        subscribers.discard(queue)
+        if not subscribers:
+            self._subscribers.pop(run_id, None)
 
     def publish(self, run_id: str, payload: dict) -> None:
         for queue in self._subscribers.get(run_id, set()):
+            if queue.full():
+                queue.get_nowait()
             queue.put_nowait(payload)
 
 
@@ -64,7 +72,12 @@ class WorkflowEngine:
         task = self.tasks.get(run_id)
         if task and not task.done():
             return
-        self.tasks[run_id] = asyncio.create_task(self.execute(run_id))
+        task = asyncio.create_task(self.execute(run_id))
+        self.tasks[run_id] = task
+        task.add_done_callback(
+            lambda completed, key=run_id: self.tasks.pop(key, None)
+            if self.tasks.get(key) is completed else None
+        )
 
     def resume(self, run_id: str) -> None:
         task = self.tasks.get(run_id)
@@ -85,8 +98,11 @@ class WorkflowEngine:
         await self.emit(run_id, None, "run.started", {"graphHash": run.graph_hash})
 
         try:
-            completed = {item.node_id: item for item in run.node_runs if item.status == "succeeded"}
             nodes = {node.id: node for node in run.snapshot.nodes}
+            completed = {
+                item.node_id: item for item in run.node_runs
+                if item.status == "succeeded" and item.node_id in nodes
+            }
             while len(completed) < len(nodes):
                 if run_id in self.cancelled:
                     self.storage.update_run(run_id, "cancelled")
@@ -125,6 +141,8 @@ class WorkflowEngine:
         except Exception as exc:
             self.storage.update_run(run_id, "failed")
             await self.emit(run_id, None, "run.failed", {"error": str(exc)})
+        finally:
+            self.cancelled.discard(run_id)
 
     async def _execute_node(
         self, run_id: str, node_run_id: str, node: ExecutionNode, completed: dict
@@ -151,7 +169,7 @@ class WorkflowEngine:
                 values.extend(str(self.storage.get_artifact(item).content.get("text", "")) for item in input_artifact_ids if self.storage.get_artifact(item))
                 if str(node.config["fail_if_text"]) in " ".join(values):
                     raise RuntimeError(str(node.config.get("failure_message", "模拟节点失败")))
-            cache_key = self._cache_key(node, input_artifact_ids)
+            cache_key = self._cache_key(run_id, node, input_artifact_ids)
             definition = get_node_definition(node.type)
             cache_enabled = bool(
                 definition
@@ -503,10 +521,23 @@ class WorkflowEngine:
                 "summary": "根据已批准章节生成结构化状态变更提案，尚未应用",
             }
             return content, "writing.StatePatch@1"
-        relative_path = str(node.config.get("chapter_path") or "demo/manuscript/chapter-0001.md")
-        if Path(relative_path).is_absolute() or ".." in Path(relative_path).parts:
-            raise RuntimeError("章节归档路径必须是项目内相对路径")
-        target = self.project_root / relative_path
+        run = self.storage.get_run(revision_artifact.run_id)
+        context = run.snapshot.run_context if run else {}
+        project = self.storage.get_project(str(context.get("project_id", "")))
+        expected_path = str(context.get("archive_path", ""))
+        relative_path = str(node.config.get("chapter_path") or expected_path)
+        if not project or not expected_path or relative_path != expected_path:
+            raise RuntimeError("章节归档路径与当前项目运行上下文不一致")
+        relative = Path(relative_path)
+        project_directory = (self.project_root / project.slug).resolve()
+        target = (self.project_root / relative).resolve()
+        if (
+            relative.is_absolute() or ".." in relative.parts
+            or relative.parts[:1] != (project.slug,)
+            or not target.is_relative_to(project_directory)
+            or (target.exists() and target.is_symlink())
+        ):
+            raise RuntimeError("章节归档路径必须严格位于当前项目内")
         target.parent.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(target.suffix + ".tmp")
         text = revision_artifact.content["text"]
@@ -1023,7 +1054,7 @@ class WorkflowEngine:
             raise ValueError("模型结构化输出必须是 JSON 对象")
         return value
 
-    def _cache_key(self, node: ExecutionNode, input_artifact_ids: list[str]) -> str:
+    def _cache_key(self, run_id: str, node: ExecutionNode, input_artifact_ids: list[str]) -> str:
         definition = get_node_definition(node.type)
         parent_hashes = [self.storage.get_artifact(item).content_hash for item in input_artifact_ids]
         payload = {
@@ -1034,6 +1065,22 @@ class WorkflowEngine:
         }
         if is_model_node_type(node.type):
             payload["provider_endpoint"] = node.config["connection_snapshot"]["base_url"]
+            run = self.storage.get_run(run_id)
+            context = run.snapshot.run_context if run else {}
+            project_id = str(context.get("project_id", ""))
+            prompt_ids = {
+                str(node.config.get("prompt_id", "")),
+                str(node.config.get("instruction_prompt_id", "")),
+            } - {""}
+            payload["prompt_context"] = {
+                "project_id": project_id,
+                "project_title": context.get("project_title"),
+                "chapter_number": context.get("chapter_number"),
+                "overrides": {
+                    prompt_id: self.storage.get_prompt_override(project_id, prompt_id)
+                    for prompt_id in sorted(prompt_ids)
+                } if project_id else {},
+            }
         return hashlib.sha256(
             json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -1083,15 +1130,31 @@ class WorkflowEngine:
         map_row = next((row for row in run.node_runs if row.node_id == map_id), None)
         if not map_node or not map_row:
             raise ValueError("Map 节点不存在")
-        target_ids = {row.node_id for row in run.node_runs if row.node_id.startswith(f"{item_prefix}/")}
-        target_ids.add(map_id)
-        self.storage.reset_node_runs(run.id, target_ids)
-        await self.emit(run.id, node_run_id, "map.item.retry.requested", {"itemId": item_prefix})
-        completed = {
-            row.node_id: row for row in self.storage.get_run(run.id).node_runs
-            if row.status == "succeeded"
+        target_ids = {
+            row.node_id for row in run.node_runs if row.node_id.startswith(f"{item_prefix}/")
         }
-        await self._execute_node(run.id, map_row.id, map_node, completed)
-        self.storage.update_run(run.id, "succeeded")
-        await self.emit(run.id, map_row.id, "map.item.retry.succeeded", {"itemId": item_prefix})
+        descendants = {map_id}
+        changed = True
+        while changed:
+            changed = False
+            for node in run.snapshot.nodes:
+                if node.id not in descendants and any(
+                    parent in descendants for parent in node.dependencies
+                ):
+                    descendants.add(node.id)
+                    changed = True
+        target_ids.update(descendants)
+        self.cancelled.discard(run.id)
+        self.storage.reset_node_runs(run.id, target_ids)
+        await self.emit(
+            run.id, node_run_id, "map.item.retry.requested",
+            {"itemId": item_prefix, "resetNodeIds": sorted(target_ids)},
+        )
+        await self.execute(run.id)
+        refreshed = self.storage.get_run(run.id)
+        if not refreshed or refreshed.status != "succeeded":
+            raise RuntimeError("Map 条目重试后运行未成功")
+        await self.emit(
+            run.id, map_row.id, "map.item.retry.succeeded", {"itemId": item_prefix}
+        )
         return run.id

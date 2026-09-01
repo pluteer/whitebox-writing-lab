@@ -13,7 +13,10 @@ def compose_production_canvas(
     stage_ids: set[str] | None = None,
 ) -> WorkflowDocument:
     selected = stage_ids or {stage.id for stage in canvas.stages}
-    bound = {stage.id: (workflows[stage.workflow_id], stage) for stage in canvas.stages if stage.workflow_id and stage.id in selected}
+    bound = {
+        stage.id: (workflows.get(stage.id) or workflows[stage.workflow_id], stage)
+        for stage in canvas.stages if stage.workflow_id and stage.id in selected
+    }
     connected = {edge.source for edge in canvas.edges if edge.source in selected and edge.target in selected} | {edge.target for edge in canvas.edges if edge.source in selected and edge.target in selected}
     missing = sorted(stage_id for stage_id in connected if stage_id not in bound)
     if missing:
@@ -36,8 +39,8 @@ def compose_production_canvas(
             boundary_outputs[(stage_id, output_name)] = (f"{prefix}/{node.id}", "value")
             boundary_outputs.setdefault((stage_id, "output"), (f"{prefix}/{node.id}", "value"))
         if not any(key[0] == stage_id for key in boundary_outputs):
-            targets = {edge.target for edge in workflow.edges}
-            leaf = next((node for node in workflow.nodes if node.id not in targets), None)
+            sources = {edge.source for edge in workflow.edges}
+            leaf = next((node for node in workflow.nodes if node.id not in sources), None)
             if leaf:
                 definition = get_node_definition(leaf.type)
                 output_port = next(iter(definition.outputs), "value") if definition else "value"

@@ -7,8 +7,10 @@ import os
 import base64
 import mimetypes
 import re
+import secrets
 import difflib
 import copy
+import sqlite3
 import yaml
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -16,7 +18,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -476,17 +478,22 @@ def create_app(
             if not stored_official or stored_official.revision < official_workflow.revision:
                 storage.save_workflow(official_workflow)
         for run_id in storage.list_incomplete_run_ids():
+            demo_project = storage.get_project("demo-project")
+            if demo_project:
+                storage.migrate_legacy_run_context(run_id, demo_project)
             recovered_nodes = storage.prepare_run_for_recovery(run_id)
             if recovered_nodes:
                 await engine.emit(run_id, None, "run.recovery.prepared", {"nodeCount": recovered_nodes})
             engine.start(run_id)
         yield
-        for task in engine.tasks.values():
+        tasks = list(engine.tasks.values())
+        for task in tasks:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*engine.tasks.values(), return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     app = FastAPI(title="Whitebox Writing API", version=get_version(), lifespan=lifespan)
+    instance_token = os.getenv("WHITEBOX_INSTANCE_TOKEN") or secrets.token_hex(32)
     web_dist = Path(os.getenv("WHITEBOX_WEB_DIST", Path(__file__).resolve().parents[2] / "web" / "dist"))
     app.state.storage = storage
     app.state.engine = engine
@@ -504,7 +511,11 @@ def create_app(
         return {"status": "ok"}
 
     @app.get("/api/runtime-info")
-    def runtime_info() -> dict[str, str]:
+    def runtime_info(x_whitebox_instance_token: str | None = Header(default=None)) -> dict[str, str | bool]:
+        token_valid = bool(
+            x_whitebox_instance_token
+            and secrets.compare_digest(x_whitebox_instance_token, instance_token)
+        )
         return {
             "version": get_version(),
             "mode": os.getenv("WHITEBOX_RUNTIME_MODE", "development"),
@@ -512,6 +523,7 @@ def create_app(
             "secrets_path": str(secret_store.path),
             "projects_path": str(projects_root),
             "web_dist": str(web_dist),
+            "instance_token_valid": token_valid,
         }
 
     @app.get("/api/skills")
@@ -860,7 +872,9 @@ def create_app(
         ])
         try:
             created = storage.create_project(str(uuid4()), ProjectCreate(title=request.title, slug=request.slug, brief=brief, genre=str(candidate.get("genre", ""))))
-        except Exception as exc:
+        except sqlite3.IntegrityError as exc:
+            if "projects.slug" not in str(exc):
+                raise
             raise HTTPException(409, "项目 slug 已存在") from exc
         for directory in ("manuscript", "world", "characters", "outline", "state"):
             (projects_root / created.slug / directory).mkdir(parents=True, exist_ok=True)
@@ -873,7 +887,9 @@ def create_app(
     def create_project(project: ProjectCreate):
         try:
             created = storage.create_project(str(uuid4()), project)
-        except Exception as exc:
+        except sqlite3.IntegrityError as exc:
+            if "projects.slug" not in str(exc):
+                raise
             raise HTTPException(409, "项目 slug 已存在") from exc
         for directory in ("manuscript", "world", "characters", "outline", "state"):
             (projects_root / created.slug / directory).mkdir(parents=True, exist_ok=True)
@@ -999,12 +1015,17 @@ def create_app(
         return {"project": created, "production_canvas": canvas, "workflow_id_map": workflow_map}
 
     @app.put("/api/projects/{project_id}/production-canvas")
-    def save_production_canvas(project_id: str, canvas: ProductionCanvas):
+    def save_production_canvas(
+        project_id: str, canvas: ProductionCanvas, expected_revision: int | None = None
+    ):
         project_root_for(project_id)
         if canvas.project_id != project_id:
             raise HTTPException(400, "生产画布项目 ID 不一致")
         hydrated_stages = []
         for stage in canvas.stages:
+            if stage.workflow_id and stage.workflow_revision is not None:
+                if not storage.get_workflow_version(stage.workflow_id, stage.workflow_revision):
+                    raise HTTPException(422, f"阶段 {stage.id} 引用的 Workflow 发布版本不存在")
             workflow = resolve_stage_workflow(storage, stage)
             if workflow:
                 inputs, outputs = derive_workflow_boundary_ports(workflow)
@@ -1037,9 +1058,14 @@ def create_app(
                 raise HTTPException(422, f"组件 {edge.target} 的输入端口重复连接")
             occupied_inputs.add(target_key)
         for stage in canvas.stages:
-            if stage.workflow_id and not storage.get_workflow(stage.workflow_id):
+            if stage.workflow_id and stage.workflow_revision is None and not storage.get_workflow(stage.workflow_id):
                 raise HTTPException(422, f"阶段 {stage.id} 引用的 Workflow 不存在")
-        return storage.save_production_canvas(canvas)
+        try:
+            return storage.save_production_canvas_checked(
+                canvas, canvas.revision if expected_revision is None else expected_revision
+            )
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.patch("/api/projects/{project_id}/production-stages/{stage_id}")
     def update_production_stage(
@@ -1076,8 +1102,10 @@ def create_app(
                         raise HTTPException(422, f"Workflow 参数 {parameter.id} 类型无效，应为 {parameter.type}")
         updated_stage = stage.model_copy(update=updates)
         canvas.stages = [updated_stage if item.id == stage_id else item for item in canvas.stages]
-        canvas.revision += 1
-        storage.save_production_canvas(canvas)
+        try:
+            storage.save_production_canvas_checked(canvas, canvas.revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return updated_stage
 
     @app.post("/api/projects/{project_id}/production-stages", status_code=201)
@@ -1112,8 +1140,10 @@ def create_app(
             "workflow_id": workflow_id,
         })
         canvas.stages.append(stage)
-        canvas.revision += 1
-        storage.save_production_canvas(canvas)
+        try:
+            canvas = storage.save_production_canvas_checked(canvas, canvas.revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return {"canvas": canvas, "stage": stage, "workflow": workflow}
 
     @app.get("/api/projects/{project_id}/reference-books")
@@ -1180,8 +1210,10 @@ def create_app(
             "position": {"x": 80, "y": 760}, "workflow_id": workflow.id,
         })
         canvas.stages.append(stage)
-        canvas.revision += 1
-        storage.save_production_canvas(canvas)
+        try:
+            storage.save_production_canvas_checked(canvas, canvas.revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
         return ReferenceBookImportResult(reference_book=ReferenceBook.model_validate(book.model_dump(exclude={"normalized_content"})), workflow=workflow, stage=stage)
 
     @app.delete("/api/projects/{project_id}/production-stages/{stage_id}", status_code=204)
@@ -1191,8 +1223,10 @@ def create_app(
             raise HTTPException(404, "生产阶段不存在")
         canvas.stages = [stage for stage in canvas.stages if stage.id != stage_id]
         canvas.edges = [edge for edge in canvas.edges if edge.source != stage_id and edge.target != stage_id]
-        canvas.revision += 1
-        storage.save_production_canvas(canvas)
+        try:
+            storage.save_production_canvas_checked(canvas, canvas.revision)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @app.get("/api/projects/{project_id}/production-status")
     def get_production_status(project_id: str):
@@ -1272,26 +1306,41 @@ def create_app(
     ):
         category, relative_name = relative_path.split("/", 1)
         target = managed_asset_target(root, category, relative_name)
-        current_hash = hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
-        if current_hash != expected_hash:
-            raise HTTPException(
-                409,
-                {
+        with storage._lock:
+            previous = target.read_bytes() if target.exists() else None
+            current_hash = hashlib.sha256(previous).hexdigest() if previous is not None else None
+            if current_hash != expected_hash:
+                raise HTTPException(409, {
                     "code": "ASSET_CONFLICT",
                     "message": "资产已被其他操作修改，请刷新后重试",
                     "expected_hash": expected_hash,
                     "current_hash": current_hash,
-                },
-            )
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + f".{uuid4().hex}.tmp")
-        temporary.write_text(content, encoding="utf-8")
-        os.replace(temporary, target)
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
-        return storage.create_asset_version(
-            str(uuid4()), project_id, relative_path, content_hash, current_hash,
-            content, actor, note, source_artifact_id,
-        )
+                })
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(target.suffix + f".{uuid4().hex}.tmp")
+            try:
+                temporary.write_text(content, encoding="utf-8")
+                os.replace(temporary, target)
+                content_hash = hashlib.sha256(content.encode()).hexdigest()
+                version_id = str(uuid4())
+                try:
+                    return storage.create_asset_version(
+                        version_id, project_id, relative_path, content_hash, current_hash,
+                        content, actor, note, source_artifact_id,
+                    )
+                except Exception:
+                    storage.delete_asset_versions([version_id])
+                    raise
+            except Exception:
+                if previous is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    rollback = target.with_suffix(target.suffix + f".{uuid4().hex}.rollback")
+                    rollback.write_bytes(previous)
+                    os.replace(rollback, target)
+                raise
+            finally:
+                temporary.unlink(missing_ok=True)
 
     @app.get("/api/projects/{project_id}/assets")
     def list_project_assets(
@@ -1575,43 +1624,60 @@ def create_app(
         project_id: str, artifact_id: str, request: StatePatchApplyRequest
     ):
         artifact = state_proposal_for_project(project_id, artifact_id)
-        if storage.state_patch_was_applied(project_id, artifact.id):
-            raise HTTPException(409, "该状态提案已经应用")
-        _, root, documents, hashes, _ = prepare_state_patch(project_id, artifact)
-        if request.expected_hashes != hashes:
-            raise HTTPException(409, {
-                "code": "ASSET_CONFLICT", "message": "提案目标文件已变化，请重新预览",
-                "expected_hashes": request.expected_hashes, "current_hashes": hashes,
-            })
-        temporary_files: list[tuple[Path, Path]] = []
-        try:
-            for relative_path, document in documents.items():
-                category, relative_name = relative_path.split("/", 1)
-                target = managed_asset_target(root, category, relative_name)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                temporary = target.with_suffix(target.suffix + f".{uuid4().hex}.tmp")
-                temporary.write_text(
-                    json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
-                temporary_files.append((temporary, target))
-            for temporary, target in temporary_files:
-                os.replace(temporary, target)
-        finally:
-            for temporary, _ in temporary_files:
-                temporary.unlink(missing_ok=True)
-        versions = []
-        for relative_path, document in documents.items():
-            content = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
-            versions.append(storage.create_asset_version(
-                str(uuid4()), project_id, relative_path,
-                hashlib.sha256(content.encode()).hexdigest(), hashes[relative_path],
-                content, request.actor, request.note, artifact.id,
-            ))
-        if not storage.mark_state_patch_applied(
-            project_id, artifact.id, request.actor, request.note
-        ):
-            raise HTTPException(409, "该状态提案已经应用")
-        return versions
+        with storage._lock:
+            if not storage.mark_state_patch_applied(
+                project_id, artifact.id, request.actor, request.note
+            ):
+                raise HTTPException(409, "该状态提案已经应用")
+            version_ids: list[str] = []
+            originals: dict[Path, bytes | None] = {}
+            temporary_files: list[tuple[Path, Path]] = []
+            try:
+                _, root, documents, hashes, _ = prepare_state_patch(project_id, artifact)
+                if request.expected_hashes != hashes:
+                    raise HTTPException(409, {
+                        "code": "ASSET_CONFLICT", "message": "提案目标文件已变化，请重新预览",
+                        "expected_hashes": request.expected_hashes, "current_hashes": hashes,
+                    })
+                for relative_path in documents:
+                    category, relative_name = relative_path.split("/", 1)
+                    target = managed_asset_target(root, category, relative_name)
+                    originals[target] = target.read_bytes() if target.exists() else None
+                for relative_path, document in documents.items():
+                    category, relative_name = relative_path.split("/", 1)
+                    target = managed_asset_target(root, category, relative_name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    temporary = target.with_suffix(target.suffix + f".{uuid4().hex}.tmp")
+                    temporary.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                    temporary_files.append((temporary, target))
+                for temporary, target in temporary_files:
+                    os.replace(temporary, target)
+                versions = []
+                for relative_path, document in documents.items():
+                    content = json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+                    version_id = str(uuid4())
+                    version_ids.append(version_id)
+                    version = storage.create_asset_version(
+                        version_id, project_id, relative_path,
+                        hashlib.sha256(content.encode()).hexdigest(), hashes[relative_path],
+                        content, request.actor, request.note, artifact.id,
+                    )
+                    versions.append(version)
+                return versions
+            except Exception:
+                storage.delete_asset_versions(version_ids)
+                for target, original in originals.items():
+                    if original is None:
+                        target.unlink(missing_ok=True)
+                    else:
+                        rollback = target.with_suffix(target.suffix + f".{uuid4().hex}.rollback")
+                        rollback.write_bytes(original)
+                        os.replace(rollback, target)
+                storage.unmark_state_patch_applied(project_id, artifact.id)
+                raise
+            finally:
+                for temporary, _ in temporary_files:
+                    temporary.unlink(missing_ok=True)
 
     @app.get("/api/node-definitions")
     def node_definitions():
@@ -1639,8 +1705,16 @@ def create_app(
         return storage.upsert_subflow(str(uuid4()), subflow)
 
     @app.get("/api/approvals")
-    def list_approvals():
-        return storage.list_pending_approvals()
+    def list_approvals(project_id: str | None = None):
+        approvals = storage.list_pending_approvals()
+        if project_id is None:
+            return approvals
+        project_root_for(project_id)
+        return [
+            approval for approval in approvals
+            if (run := storage.get_run(approval.run_id))
+            and run.snapshot.run_context.get("project_id") == project_id
+        ]
 
     @app.post("/api/approvals/{approval_id}/decide")
     async def decide_approval(approval_id: str, request: ApprovalDecisionRequest):
@@ -1977,14 +2051,21 @@ def create_app(
         return workflow
 
     @app.put("/api/workflows/{workflow_id}", response_model=WorkflowDocument)
-    def save_workflow(workflow_id: str, workflow: WorkflowDocument) -> WorkflowDocument:
+    def save_workflow(
+        workflow_id: str, workflow: WorkflowDocument, expected_revision: int | None = None
+    ) -> WorkflowDocument:
+        if workflow_id == "starter" or workflow_id.startswith("official-"):
+            raise HTTPException(403, "官方 Workflow 不可修改，请先创建项目副本")
         if workflow.id != workflow_id:
             raise HTTPException(400, "路径和文档中的工作流 ID 不一致")
         validation = compile_workflow(workflow, model_profiles=model_profile_map(), provider_connections=connection_map(), provider_models=provider_model_map(), skills=skill_map(), workflow_resolver=storage.get_workflow)
         if not validation.valid:
             raise HTTPException(422, validation.errors)
         try:
-            storage.save_workflow_checked(workflow)
+            inferred = expected_revision
+            if inferred is None and storage.get_workflow(workflow_id):
+                inferred = workflow.revision - 1
+            storage.save_workflow_checked(workflow, inferred)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return workflow
@@ -2039,6 +2120,8 @@ def create_app(
 
     @app.post("/api/workflows/{workflow_id}/restore", response_model=WorkflowDocument)
     def restore_workflow_version(workflow_id: str, request: WorkflowRestoreRequest):
+        if workflow_id == "starter" or workflow_id.startswith("official-"):
+            raise HTTPException(403, "官方 Workflow 不可恢复为草稿，请先创建项目副本")
         version = storage.get_workflow_version(workflow_id, request.revision)
         if not version:
             raise HTTPException(404, "Workflow 版本不存在")
@@ -2062,6 +2145,16 @@ def create_app(
         )
         if not result.valid or not result.execution_graph:
             raise HTTPException(422, result.errors)
+        side_effect_nodes = [
+            node.id for node in result.execution_graph.nodes
+            if get_node_definition(node.type)
+            and get_node_definition(node.type).execution.side_effect
+        ]
+        if side_effect_nodes and not request.allow_side_effects:
+            raise HTTPException(409, {
+                "message": "本次流程包含文件写入等副作用，请明确允许",
+                "node_ids": side_effect_nodes,
+            })
         project = storage.get_project(request.project_id)
         if not project:
             raise HTTPException(404, "项目不存在")
@@ -2086,10 +2179,11 @@ def create_app(
                 ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ).encode()
         ).hexdigest()
-        try:
-            storage.save_workflow_checked(request.workflow)
-        except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
+        if request.workflow.id != "starter" and not request.workflow.id.startswith("official-"):
+            try:
+                storage.save_workflow_checked(request.workflow)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
         run_id = str(uuid4())
         node_run_ids = {node.id: str(uuid4()) for node in result.execution_graph.nodes}
         storage.create_run(run_id, result.execution_graph, node_run_ids)
@@ -2114,7 +2208,13 @@ def create_app(
                 for edge in canvas.edges:
                     if edge.source in selected_ids and edge.target not in selected_ids:
                         selected_ids.add(edge.target); changed = True
-        workflows = {stage.workflow_id: resolve_stage_workflow(storage, stage) for stage in canvas.stages if stage.workflow_id and stage.id in selected_ids}
+        selected_stages = [
+            stage for stage in canvas.stages
+            if stage.workflow_id and stage.id in selected_ids
+        ]
+        workflows = {
+            stage.id: resolve_stage_workflow(storage, stage) for stage in selected_stages
+        }
         if any(workflow is None for workflow in workflows.values()):
             raise HTTPException(422, "生产组件引用的 Workflow 不存在")
         try:
@@ -2128,7 +2228,14 @@ def create_app(
         if side_effect_nodes and not request.allow_side_effects:
             raise HTTPException(409, {"message": "本次流程包含文件写入等副作用，请在预检中明确允许", "node_ids": side_effect_nodes})
         context = ChapterRunContext(project_id=project.id, project_title=project.title, project_slug=project.slug, chapter_number=request.chapter_number, archive_path=f"{project.slug}/manuscript/chapter-{request.chapter_number:04d}.md")
-        result.execution_graph.run_context = {**context.model_dump(mode="json"), "production_canvas_revision": canvas.revision, "component_workflows": {stage.id: {"workflow_id": stage.workflow_id, "workflow_revision": stage.workflow_revision or workflows[stage.workflow_id].revision, "parameter_values": stage.parameter_values} for stage in canvas.stages if stage.workflow_id and stage.id in selected_ids}}
+        result.execution_graph.run_context = {**context.model_dump(mode="json"), "production_canvas_revision": canvas.revision, "component_workflows": {stage.id: {"workflow_id": stage.workflow_id, "workflow_revision": stage.workflow_revision or workflows[stage.id].revision, "parameter_values": stage.parameter_values} for stage in selected_stages}}
+        for node in result.execution_graph.nodes:
+            if node.type == "writing.chapter_archive":
+                node.config.update({
+                    "chapter_path": context.archive_path,
+                    "project_id": project.id,
+                    "chapter_number": request.chapter_number,
+                })
         result.execution_graph.graph_hash = hashlib.sha256(json.dumps(result.execution_graph.model_dump(exclude={"graph_hash"}), ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         run_id = str(uuid4())
         storage.create_run(run_id, result.execution_graph, {node.id: str(uuid4()) for node in result.execution_graph.nodes})
@@ -2156,8 +2263,14 @@ def create_app(
         connected_ids = {edge.source for edge in canvas.edges} | {edge.target for edge in canvas.edges}
         stages = [stage for stage in canvas.stages if stage.id in selected_ids and (stage.workflow_id or stage.id in connected_ids)]
         missing = [stage.id for stage in stages if not stage.workflow_id]
-        workflows = {stage.workflow_id: resolve_stage_workflow(storage, stage) for stage in stages if stage.workflow_id}
-        missing_workflows = [stage.id for stage in stages if stage.workflow_id and not workflows.get(stage.workflow_id)]
+        workflows = {
+            stage.id: resolve_stage_workflow(storage, stage)
+            for stage in stages if stage.workflow_id
+        }
+        missing_workflows = [
+            stage.id for stage in stages
+            if stage.workflow_id and not workflows.get(stage.id)
+        ]
         errors = [f"组件未绑定 Workflow: {item}" for item in missing] + [f"组件引用的 Workflow 不存在: {item}" for item in missing_workflows]
         if not errors:
             try:
@@ -2170,7 +2283,7 @@ def create_app(
         node_count = 0
         component_rows = []
         for stage in stages:
-            workflow = workflows.get(stage.workflow_id) if stage.workflow_id else None
+            workflow = workflows.get(stage.id) if stage.workflow_id else None
             nodes = workflow.nodes if workflow else []
             node_count += len(nodes)
             model_calls += sum(get_node_definition(node.type).execution.kind in {"llm", "agent"} for node in nodes if get_node_definition(node.type))
@@ -2239,9 +2352,11 @@ def create_app(
         return {"runId": run_id}
 
     @app.get("/api/runs/{run_id}")
-    def get_run(run_id: str):
+    def get_run(run_id: str, project_id: str | None = None):
         run = storage.get_run(run_id)
-        if not run:
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
             raise HTTPException(404, "运行不存在")
         return run
 
@@ -2252,14 +2367,14 @@ def create_app(
         return storage.list_runs(project_id, limit)
 
     @app.get("/api/run-comparisons")
-    def compare_runs(left_id: str, right_id: str, project_id: str | None = None):
+    def compare_runs(left_id: str, right_id: str, project_id: str):
         left = storage.get_run(left_id)
         right = storage.get_run(right_id)
         if not left or not right:
             raise HTTPException(404, "待比较的运行不存在")
         left_project = left.snapshot.run_context.get("project_id")
         right_project = right.snapshot.run_context.get("project_id")
-        if left_project != right_project or (project_id and left_project != project_id):
+        if left_project != right_project or left_project != project_id:
             raise HTTPException(404, "运行不存在")
         left_nodes = {item.node_id: item for item in left.node_runs}
         right_nodes = {item.node_id: item for item in right.node_runs}
@@ -2280,8 +2395,11 @@ def create_app(
         }
 
     @app.get("/api/runs/{run_id}/events")
-    def get_run_events(run_id: str, after: int = 0):
-        if not storage.get_run(run_id):
+    def get_run_events(run_id: str, project_id: str | None = None, after: int = 0):
+        run = storage.get_run(run_id)
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
             raise HTTPException(404, "运行不存在")
         return storage.list_events(run_id, after)
 
@@ -2320,22 +2438,35 @@ def create_app(
         return {"runId": resumed_id, "resumedNodeId": failed.node_id}
 
     @app.get("/api/node-runs/{node_run_id}/attempts")
-    def get_node_attempts(node_run_id: str):
-        if not storage.get_node_run(node_run_id):
+    def get_node_attempts(node_run_id: str, project_id: str | None = None):
+        node_run = storage.get_node_run(node_run_id)
+        run = storage.get_run(node_run.run_id) if node_run else None
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
             raise HTTPException(404, "节点运行不存在")
         return storage.list_attempts(node_run_id)
 
     @app.get("/api/attempts/{attempt_id}/provider-calls")
-    def get_provider_calls(attempt_id: str):
+    def get_provider_calls(attempt_id: str, project_id: str | None = None):
+        attempt = storage.get_attempt(attempt_id)
+        node_run = storage.get_node_run(attempt.node_run_id) if attempt else None
+        run = storage.get_run(node_run.run_id) if node_run else None
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
+            raise HTTPException(404, "节点尝试不存在")
         return storage.list_provider_calls(attempt_id)
 
     @app.get("/api/map-runs/{node_run_id}/summary", response_model=MapRunSummary)
-    def get_map_run_summary(node_run_id: str):
+    def get_map_run_summary(node_run_id: str, project_id: str | None = None):
         map_run = storage.get_node_run(node_run_id)
         if not map_run or map_run.node_type != "flow.map":
             raise HTTPException(404, "Map 节点运行不存在")
         run = storage.get_run(map_run.run_id)
-        if not run:
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
             raise HTTPException(404, "运行不存在")
         groups: dict[str, list] = {}
         for row in run.node_runs:
@@ -2382,18 +2513,23 @@ def create_app(
         artifact = storage.get_artifact(artifact_id)
         if not artifact:
             raise HTTPException(404, "产物不存在")
-        if project_id:
-            run = storage.get_run(artifact.run_id)
-            if not run or run.snapshot.run_context.get("project_id") != project_id:
-                raise HTTPException(404, "产物不存在")
+        run = storage.get_run(artifact.run_id)
+        if not run or (
+            project_id and run.snapshot.run_context.get("project_id") != project_id
+        ):
+            raise HTTPException(404, "产物不存在")
         return artifact
 
     @app.websocket("/api/runs/{run_id}/events")
-    async def run_events(websocket: WebSocket, run_id: str, after: int = 0) -> None:
-        await websocket.accept()
-        if not storage.get_run(run_id):
+    async def run_events(
+        websocket: WebSocket, run_id: str, project_id: str, after: int = 0
+    ) -> None:
+        run = storage.get_run(run_id)
+        if not run or run.snapshot.run_context.get("project_id") != project_id:
+            await websocket.accept()
             await websocket.close(code=4404, reason="运行不存在")
             return
+        await websocket.accept()
         queue = broker.subscribe(run_id)
         replayed = storage.list_events(run_id, after)
         replayed_through = after
