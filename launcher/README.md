@@ -57,7 +57,8 @@ GUI 中的 `Install Desktop Shortcut` 会创建桌面快捷方式；快捷方式
 ## 要求
 
 - Windows 10/11。
+- PowerShell 7（`pwsh`）。
 - WSL 2 和 Ubuntu。
 - WSL 内安装 Python 3.12+、Node.js 22+、npm。
 
-启动器只绑定 `127.0.0.1:8001` 和 `127.0.0.1:5173`，不会开放局域网监听。关闭启动器窗口不会停止服务，需要点击“停止服务”。当前仍依赖系统 PowerShell、WSL、Python 和 Node.js，尚未打包为单文件 `.exe`。
+启动器只绑定 `127.0.0.1:8001` 和 `127.0.0.1:5173`，不会开放局域网监听。关闭启动器窗口不会停止服务，需要点击“停止服务”。当前仍依赖 PowerShell 7、WSL、Python 和 Node.js，尚未打包为单文件 `.exe`。

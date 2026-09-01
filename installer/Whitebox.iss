@@ -63,7 +63,7 @@ Name: "{group}\Whitebox Launcher README"; Filename: "{app}\launcher\README.md"
 Filename: "{app}\launcher\启动Whitebox.bat"; WorkingDir: "{app}\launcher"; Description: "Launch Whitebox Writing"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\launcher\WhiteboxLauncher.ps1"" -StopServices"; Flags: runhidden waituntilterminated; RunOnceId: "StopWhiteboxServices"
+Filename: "pwsh.exe"; Parameters: "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{app}\launcher\WhiteboxLauncher.ps1"" -StopServices"; Flags: runhidden waituntilterminated; RunOnceId: "StopWhiteboxServices"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\launcher\runtime"

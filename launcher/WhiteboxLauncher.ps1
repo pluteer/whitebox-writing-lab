@@ -1,4 +1,4 @@
-param(
+﻿param(
     [switch]$CheckOnly,
     [switch]$StartServices,
     [switch]$StopServices,
