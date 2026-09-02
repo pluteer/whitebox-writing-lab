@@ -34,7 +34,7 @@ try {
     New-Item -ItemType Directory -Force "$Packaging\runtime\web" | Out-Null
     Copy-Item -Recurse -Force "$Root\apps\web\dist\*" "$Packaging\runtime\web"
     Copy-Item -Force "$Root\launcher\StartWhiteboxPortable.bat", "$Root\launcher\StopWhitebox.bat", "$Root\README.md", "$Root\version.json", "$Root\LICENSE" $Packaging
-    Copy-Item -Force "$Root\launcher\QQ使用说明.txt" "$Packaging\QQ-README.txt"
+    Copy-Item -Force "$Root\launcher\QQ-README.txt" "$Packaging\QQ-README.txt"
     if (-not $SkipInstaller) {
         & $Iscc "$Root\installer\Whitebox.iss"
         if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed." }
