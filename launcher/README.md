@@ -1,6 +1,6 @@
 # Whitebox Windows 启动器
 
-双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.4.5`。
+双击 `启动Whitebox.bat` 打开本地 GUI 启动器。当前版本为 `0.4.6`。
 
 启动器通过 Windows 的 `wsl.exe` 调用项目现有 WSL 环境，不复制或复用 ComfyUI 的 Python、Git、DLL、配置及源码。
 
@@ -34,10 +34,10 @@
 要构建给朋友直接使用的便携包，在 Windows PowerShell 中从项目根目录执行：
 
 ```powershell
-.\installer\构建便携包.ps1 -Version 0.4.5
+.\installer\构建便携包.ps1 -Version 0.4.6
 ```
 
-输出为 `packaging\whitebox-writing-portable-0.4.5.zip`。解压后双击 `StartWhiteboxPortable.bat`，不需要 WSL、Python、Node.js 或 npm；首次使用仍需要在 WebUI 中配置朋友自己的模型 API Key。
+输出为 `packaging\whitebox-writing-portable-0.4.6.zip`。解压后双击 `StartWhiteboxPortable.bat`，不需要 WSL、Python、Node.js 或 npm；首次使用仍需要在 WebUI 中配置朋友自己的模型 API Key。
 
 便携启动器在 NTFS 上将 `data` 和 `provider-secrets.json` ACL 收紧到当前 Windows 用户与 SYSTEM。在 FAT/exFAT、网络盘或 ACL 调整失败时会警告但保持便携可用，此时必须把整个便携目录视为敏感数据并限制他人访问。当前密钥仍是明文 JSON；DPAPI 加密需要 API 存储格式协同，不能只由启动器安全地实现。
 

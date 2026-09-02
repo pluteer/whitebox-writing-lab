@@ -23,11 +23,19 @@ def test_runtime_info_reports_version_and_data_boundaries(tmp_path) -> None:
         info = client.get("/api/runtime-info")
 
     assert info.status_code == 200
-    assert info.json()["version"] == "0.4.5"
+    assert info.json()["version"] == "0.4.6"
     assert info.json()["mode"] == "development"
     assert info.json()["database_path"] == str(database)
     assert info.json()["secrets_path"] == str(secrets)
     assert info.json()["projects_path"] == str(projects)
+
+
+def test_runtime_info_uses_portable_package_version(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("WHITEBOX_VERSION", "9.8.7")
+    app = create_app(tmp_path / "portable-version.db", DeepSeekProvider(api_key="test"))
+    with TestClient(app) as client:
+        info = client.get("/api/runtime-info")
+    assert info.json()["version"] == "9.8.7"
     assert info.json()["instance_token_valid"] is False
     assert "instance_token" not in info.json()
 

@@ -195,6 +195,7 @@ def start(root: Path, expected: dict[str, Path], no_browser: bool) -> None:
         environment = {
             **os.environ,
             "WHITEBOX_RUNTIME_MODE": "portable",
+            "WHITEBOX_VERSION": version,
             "WHITEBOX_DB": str(expected["data"] / "whitebox.db"),
             "WHITEBOX_SECRETS": str(expected["secrets"]),
             "WHITEBOX_PROJECTS": str(expected["projects"]),

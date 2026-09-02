@@ -1,10 +1,12 @@
-Whitebox Writing Lab 0.4.3 QQ 分享版
+Whitebox Writing Lab 0.4.5 QQ 分享版
 
 好友拿到后：
 1. 解压 ZIP（不要直接在压缩包里运行）。
 2. 双击 StartWhiteboxPortable.bat。
 3. 浏览器会自动打开 Whitebox。
-4. 第一次使用时，在“全局设置”里填写自己的模型 API Key（例如 DeepSeek Key）。
+4. 第一次使用时，打开“设置”→“添加供应商连接”。
+5. 填写连接名称、兼容 OpenAI API 的 Base URL 和好友自己的 API Key。
+6. 点击“测试并拉模型”，成功后即可在节点中选择拉取到的模型。
 
 无需安装 Python、Node.js、npm、WSL 或 PowerShell 7，也不需要管理员权限。
 
@@ -16,3 +18,4 @@ Whitebox Writing Lab 0.4.3 QQ 分享版
 - Windows 若首次提示“已保护你的电脑”，请核对文件来源和 SHA256 后，点“更多信息”再选择运行。
 
 官方仓库：https://github.com/pluteer/whitebox-writing-lab
+官方发布页：https://github.com/pluteer/whitebox-writing-lab/releases/tag/v0.4.5

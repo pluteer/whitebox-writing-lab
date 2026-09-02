@@ -24,6 +24,7 @@ def main() -> int:
         "launcher/WhiteboxLauncher.ps1": f'$LauncherVersion = "{version}"',
         "launcher/README.md": f"whitebox-writing-portable-{version}.zip",
         "installer/Whitebox.iss": f'#define AppVersion "{version}"',
+        "apps/api/whitebox/version.py": f'PACKAGE_VERSION = "{version}"',
     }
     errors = [path for path, marker in checks.items() if marker not in (ROOT / path).read_text(encoding="utf-8")]
     if errors:
